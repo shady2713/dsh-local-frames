@@ -123,7 +123,10 @@ export interface LlmStreamLike {
   prepareCall(
     config: { provider: string; model: string },
     signal?: AbortSignal,
-  ): Promise<{ stream(options: Record<string, unknown>): AsyncIterable<ModelChunk> }>;
+  ): Promise<{
+    config: Record<string, unknown>;
+    stream(options: Record<string, unknown>): AsyncIterable<ModelChunk>;
+  }>;
   listProviders?(): Promise<Array<{ id: string; name?: string }>> | Array<{ id: string; name?: string }>;
   listModels?(provider: string): Promise<Array<{ id: string; name?: string; inputModalities?: readonly string[] }>>;
 }
@@ -206,8 +209,7 @@ export function createHostVision(options: {
           input.signal,
         );
         const stream = prepared.stream({
-          provider: input.provider,
-          model: input.model,
+          ...prepared.config,
           messages: [
             {
               role: 'user',
