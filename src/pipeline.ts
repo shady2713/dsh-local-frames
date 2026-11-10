@@ -408,6 +408,7 @@ export class Pipeline {
         model: model.model,
         objects: batch,
         imagePath: frame.path,
+        taskId: task.task_id,
         sleep: (ms) => this.sleep(ms),
         beforeCall: () => {
           this.assertBudget(task.task_id);

@@ -9,11 +9,18 @@ export type VisionResult =
   | { ok: true; text: string; tokens: number | null; ms: number }
   | { ok: false; kind: VisionKind; message: string; retryAfterMs?: number };
 
+/** Stable OpenCode routing id for one collection task; recomputed after Host restart. */
+export function visionSessionId(taskId: string): string {
+  return `local-frames:${taskId}`;
+}
+
 export interface VisionRequest {
   provider: string;
   model: string;
   prompt: string;
   imagePath: string;
+  /** Stable routing id derived from the task; Host maps it to x-opencode-session. */
+  sessionId: string;
   signal?: AbortSignal;
 }
 
@@ -85,8 +92,13 @@ export function classifyFailure(failure: {
   const withRetry = (kind: VisionKind): VisionResult =>
     retryAfterMs === undefined ? { ok: false, kind, message } : { ok: false, kind, message, retryAfterMs };
   if (/quota|insufficient_quota|billing|payment|额度/.test(blob)) return withRetry('quota');
-  const missing = /missing|not set|blank|empty|未配置|缺凭据|没有凭据|no_api_key|no_credential/.test(blob);
-  if (missing || code === 'NO_CREDENTIAL' || code === 'MISSING_CREDENTIAL') return withRetry('credential_missing');
+  const missing =
+    code === 'NO_CREDENTIAL' ||
+    code === 'MISSING_CREDENTIAL' ||
+    /no_api_key|no_credential|missing[_ -]?credential|missing[_ -]?api[_ -]?key|api[_ -]?key not set|credential not set|not set|未配置|缺凭据|没有凭据/.test(
+      blob,
+    );
+  if (missing) return withRetry('credential_missing');
   if (
     code === 'AUTH' ||
     code === 'UNAUTHORIZED' ||
@@ -219,6 +231,7 @@ export function createHostVision(options: {
               ],
             },
           ],
+          sessionId: input.sessionId,
           ...(input.signal === undefined ? {} : { signal: input.signal }),
         });
         const fold = createStreamFold();

@@ -1,4 +1,4 @@
-import type { VisionClient, VisionResult } from './vision.js';
+import { visionSessionId, type VisionClient, type VisionResult } from './vision.js';
 import { buildPrompt, parseModelOutput, type ModelObject, type PromptObject } from './prompt.js';
 
 export class TaskPause extends Error {
@@ -54,6 +54,7 @@ export async function judgeBatch(options: {
   model: string;
   objects: readonly PromptObject[];
   imagePath: string;
+  taskId: string;
   sleep: (ms: number) => Promise<void>;
   beforeCall: () => void;
   onAttempt: (attempt: JudgeAttempt) => void;
@@ -75,6 +76,7 @@ export async function judgeBatch(options: {
       model: options.model,
       prompt,
       imagePath: options.imagePath,
+      sessionId: visionSessionId(options.taskId),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
     return { result, ms: Date.now() - started };

@@ -7,7 +7,7 @@ import { frameCount, frameTimestampsMs, hammingHex, dhashFromGray, DHASH_DISTANC
 import { exceedsAttachmentLimits, fitAttachmentBox, halvedTarget, selectRequestImage } from '../src/imageFit.js';
 import { judgeBatch, TaskPause } from '../src/judge.js';
 import { csvCell, outcomeFor, parseModelOutput, VERDICT_DEFINITIONS, buildPrompt, chunkObjects } from '../src/prompt.js';
-import { classifyFailure, createStreamFold } from '../src/vision.js';
+import { classifyFailure, createStreamFold, visionSessionId } from '../src/vision.js';
 import { splitForFamily, familyIdFor, exportFileName } from '../src/export.js';
 import type { VisionClient } from '../src/vision.js';
 
@@ -128,6 +128,7 @@ describe('judge retries', () => {
       model: 'm',
       objects,
       imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
       sleep: async (ms) => {
         fake.waits.push(ms);
       },
@@ -150,6 +151,7 @@ describe('judge retries', () => {
         model: 'm',
         objects,
         imagePath: '/tmp/frame.jpg',
+        taskId: 'task-test',
         sleep: async () => undefined,
         beforeCall: () => undefined,
         onAttempt: () => undefined,
@@ -166,6 +168,7 @@ describe('judge retries', () => {
         model: 'm',
         objects,
         imagePath: '/tmp/frame.jpg',
+        taskId: 'task-test',
         sleep: async () => undefined,
         beforeCall: () => undefined,
         onAttempt: () => undefined,
@@ -187,6 +190,7 @@ describe('judge retries', () => {
       model: 'm',
       objects,
       imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
       sleep: async (ms) => {
         waits.push(ms);
       },
@@ -215,6 +219,43 @@ describe('judge retries', () => {
     expect(quota.ok).toBe(false);
     if (!invalid.ok) expect(invalid.kind).toBe('credential_invalid');
     if (!quota.ok) expect(quota.kind).toBe('quota');
+  });
+});
+
+describe('classifyFailure', () => {
+  it('treats only real credential gaps as credential_missing', () => {
+    const session = classifyFailure({
+      code: 'MissingSessionID',
+      message: 'Request is missing x-opencode-session and cannot be routed efficiently.',
+      status: 400,
+    });
+    expect(session.ok).toBe(false);
+    if (!session.ok) expect(session.kind).toBe('retryable');
+
+    const header = classifyFailure({
+      message: 'Request is missing x-opencode-session',
+      status: 400,
+    });
+    expect(header.ok).toBe(false);
+    if (!header.ok) expect(header.kind).toBe('retryable');
+
+    for (const failure of [
+      { code: 'NO_CREDENTIAL', message: 'no_api_key' },
+      { code: 'MISSING_CREDENTIAL', message: 'api key not set' },
+      { message: '缺凭据' },
+      { message: '没有凭据' },
+      { message: '凭据未配置' },
+    ] as const) {
+      const result = classifyFailure(failure);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.kind).toBe('credential_missing');
+    }
+  });
+
+  it('derives a stable session id from the task id', () => {
+    const taskId = 'a962888a-601c-4d36-86d1-3b50e820e696';
+    expect(visionSessionId(taskId)).toBe(`local-frames:${taskId}`);
+    expect(visionSessionId(taskId)).toBe(visionSessionId(taskId));
   });
 });
 
