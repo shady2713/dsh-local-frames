@@ -98,6 +98,8 @@ export interface StatusSnapshot {
     exportable: number;
     errors: number;
   };
+  errors: Array<{ item_id: string; local_path: string; error_code: string | null }>;
+  pause: { code: string | null; reason: string | null } | null;
   dataDir: {
     path: string;
     usedBytes: number;

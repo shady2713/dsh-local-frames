@@ -1,7 +1,10 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import Schema from '@deepseek-ai/schemastery';
 import { openDatabase } from './db.js';
+import { createFfmpegMedia } from './media.js';
+import { clearTmp, Pipeline } from './pipeline.js';
 import { createRoutes } from './routes.js';
+import { Scheduler } from './scheduler.js';
 import { SettingsStore } from './settings.js';
 import { buildStatus } from './status.js';
 import { createTools, type ToolDefinition } from './tool.js';
@@ -13,6 +16,7 @@ import {
   type VersionSubprocess,
 } from './versions.js';
 import { pluginVersion } from './version.js';
+import { createHostVision, type AttachmentStoreLike, type LlmStreamLike } from './vision.js';
 
 export const name = 'local-frames';
 
@@ -67,6 +71,14 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function optionalService(ctx: ServiceScope, name: string): unknown {
+  try {
+    return ctx.get(name, true);
+  } catch {
+    return undefined;
+  }
+}
+
 export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   const logger = ctx.logger?.(name);
   const log = (message: string): void => {
@@ -116,19 +128,54 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
       pluginVersion: version,
     });
 
+  const media = createFfmpegMedia(ctx.subprocess, dataDir);
+  const vision = createHostVision({
+    llm: () => {
+      const service = optionalService(ctx, 'llm');
+      return service === undefined || service === null ? null : (service as LlmStreamLike);
+    },
+    attachments: () => {
+      const service = optionalService(ctx, 'attachments');
+      return service === undefined || service === null ? null : (service as AttachmentStoreLike);
+    },
+    media,
+    tmpDir: join(dataDir, 'tmp'),
+  });
+  const pipeline = new Pipeline({
+    db: database,
+    settings,
+    dataDir,
+    media,
+    vision,
+    log: logError,
+  });
+  const scheduler = new Scheduler(pipeline);
+
   const toolDisposers: Array<() => void> = [];
+  let closed = false;
   ctx.effect(() => {
     const tools = createTools({
       db: database,
       settings,
       buildStatus: currentStatus,
       log: logError,
+      dataDir,
+      pipeline,
+      environment,
     });
     for (const tool of tools) {
       const dispose = ctx.tools.register(tool);
       if (typeof dispose === 'function') toolDisposers.push(dispose);
     }
+    void clearTmp(dataDir)
+      .then(() => {
+        if (!closed) scheduler.start();
+      })
+      .catch((error: unknown) => logError(`清空临时目录失败：${errorText(error)}`));
     return () => {
+      closed = true;
+      scheduler.stop();
+      pipeline.stop();
       for (const dispose of toolDisposers) dispose();
       database.close();
     };
@@ -143,6 +190,12 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
         handler: createRoutes({
           buildStatus: () => currentStatus(false),
           log,
+          db: database,
+          settings,
+          dataDir,
+          pipeline,
+          listModels: () => vision.listImageModels(),
+          recheckEnvironment: () => environment.check(true),
         }),
       });
       return () => {
