@@ -7,3 +7,7 @@ lib/
 data/
 exports/
 tmp/
+.npm-cache/
+.sandbox/
+.playwright-mcp/
+*.tsbuildinfo
