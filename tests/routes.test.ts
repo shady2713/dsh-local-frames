@@ -9,6 +9,8 @@ const snapshot = {
   targets: [],
   task: null,
   funnel: { imported: 0, probed: 0, frames: 0, duplicatesSkipped: 0, judged: 0, exportable: 0, errors: 0 },
+  errors: [],
+  pause: null,
   dataDir: { path: '/tmp/local-frames', usedBytes: 0, limitGb: 50, freeGb: 100 },
   environment: { ok: true, checks: [], missing: [], checkedAt: '2026-01-01T00:00:00.000Z' },
 } satisfies StatusSnapshot;

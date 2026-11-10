@@ -2,6 +2,7 @@ import { directorySizeBytes, freeDiskGb } from './disk.js';
 import type { LocalFramesDatabase } from './db.js';
 import type { SettingsStore } from './settings.js';
 import type { EnvironmentChecker } from './versions.js';
+import { readProgress } from './progress.js';
 import type { StatusSnapshot, TaskRow, TargetAliases } from './types.js';
 
 function parseJsonObject(text: string): Record<string, unknown> {
@@ -127,6 +128,21 @@ export async function buildStatus(options: {
             progress: parseJsonObject(task.progress_json),
           },
     funnel: funnelFor(db, task?.task_id ?? null),
+    errors:
+      task === null
+        ? []
+        : (db.raw
+            .prepare(
+              "SELECT item_id, local_path, error_code FROM items WHERE task_id = ? AND state = 'ERROR' ORDER BY created_at ASC, rowid ASC",
+            )
+            .all(task.task_id) as Array<{ item_id: string; local_path: string; error_code: string | null }>),
+    pause:
+      task === null
+        ? null
+        : {
+            code: readProgress(task.progress_json).pauseCode,
+            reason: readProgress(task.progress_json).pauseReason,
+          },
     dataDir: {
       path: dataDir,
       usedBytes: directorySizeBytes(dataDir),
