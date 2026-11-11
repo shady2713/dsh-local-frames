@@ -9,7 +9,7 @@ import { judgeBatch, TaskPause } from '../src/judge.js';
 import { csvCell, outcomeFor, parseModelOutput, VERDICT_DEFINITIONS, buildPrompt } from '../src/prompt.js';
 import { classifyFailure, createStreamFold, visionSessionId } from '../src/vision.js';
 import { splitForFamily, familyIdFor, exportFileName } from '../src/export.js';
-import type { VisionClient } from '../src/vision.js';
+import type { VisionClient, VisionResult } from '../src/vision.js';
 
 describe('frame plan', () => {
   it('uses a 2 second default, keeps one frame for a short video, and has no per-video cap', () => {
@@ -206,6 +206,123 @@ describe('judge retries', () => {
     expect(result.ok).toBe(true);
     expect(waits).toEqual([3000]);
     expect(fake.calls).toBe(2);
+  });
+
+  it('retries timed-out calls and makes at most five attempts for one frame', async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async () => {
+        calls += 1;
+        if (calls < 5) return new Promise<VisionResult>(() => undefined);
+        return {
+          ok: true,
+          text: JSON.stringify({
+            objects: [{ name: 'object-a', verdict: 'ABSENT', visibility: 'CLEAR', confidence: 0.4, reason: '没有' }],
+          }),
+          tokens: 2,
+          ms: 1,
+        };
+      },
+    };
+    const result = await judgeBatch({
+      vision,
+      provider: 'p',
+      model: 'm',
+      objects,
+      imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+      beforeCall: () => undefined,
+      onAttempt: () => undefined,
+      credentialRetry: { used: true },
+      timeoutMs: 5,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(5);
+    expect(waits).toEqual([1000, 5000, 10_000, 30_000]);
+  });
+
+  it('stops after five timed-out attempts instead of retrying forever', async () => {
+    let calls = 0;
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async () => {
+        calls += 1;
+        return new Promise<VisionResult>(() => undefined);
+      },
+    };
+    const result = await judgeBatch({
+      vision,
+      provider: 'p',
+      model: 'm',
+      objects,
+      imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
+      sleep: async () => undefined,
+      beforeCall: () => undefined,
+      onAttempt: () => undefined,
+      credentialRetry: { used: true },
+      timeoutMs: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('call');
+      expect(result.attempts).toHaveLength(5);
+    }
+    expect(calls).toBe(5);
+  });
+
+  it('counts invalid JSON retries towards the five-attempt cap', async () => {
+    const fake = client([
+      { ok: false, kind: 'retryable', message: '超时' },
+      { ok: false, kind: 'retryable', message: '超时' },
+      { ok: true, text: 'nope', tokens: 1, ms: 1 },
+      { ok: true, text: '{', tokens: 1, ms: 1 },
+      { ok: true, text: '{"objects":[]}', tokens: 1, ms: 1 },
+    ]);
+    const result = await judgeBatch({
+      vision: fake.vision,
+      provider: 'p',
+      model: 'm',
+      objects,
+      imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
+      sleep: async () => undefined,
+      beforeCall: () => undefined,
+      onAttempt: () => undefined,
+      credentialRetry: { used: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('format');
+      expect(result.attempts).toHaveLength(5);
+    }
+    expect(fake.calls).toBe(5);
+  });
+
+  it('does not retry missing credentials once the startup retry has been used', async () => {
+    const missing = client([{ ok: false, kind: 'credential_missing', message: '缺凭据' }]);
+    await expect(
+      judgeBatch({
+        vision: missing.vision,
+        provider: 'p',
+        model: 'm',
+        objects,
+        imagePath: '/tmp/frame.jpg',
+        taskId: 'task-test',
+        sleep: async () => undefined,
+        beforeCall: () => undefined,
+        onAttempt: () => undefined,
+        credentialRetry: { used: true },
+      }),
+    ).rejects.toMatchObject({ code: 'MODEL_CREDENTIAL' });
+    expect(missing.calls).toBe(1);
   });
 
   it('treats text followed by an error finish as a failed call', () => {

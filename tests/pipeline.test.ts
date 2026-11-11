@@ -570,6 +570,8 @@ describe('parallel vision calls', () => {
       expect(judged.count).toBe(4);
       const labels = db.raw.prepare('SELECT COUNT(*) AS count FROM labels').get() as { count?: number };
       expect(labels.count).toBe(4);
+      const rows = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
+      expect(rows.count).toBe(4);
       const item = db.raw.prepare("SELECT state FROM items WHERE item_id = 'item'").get() as { state?: string };
       expect(item.state).toBe('DONE');
     } finally {

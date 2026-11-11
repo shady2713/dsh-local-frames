@@ -232,7 +232,7 @@ export function createHostVision(options: {
             },
           ],
           sessionId: input.sessionId,
-          ...(input.signal === undefined ? {} : { signal: input.signal }),
+          signal: input.signal,
         });
         const fold = createStreamFold();
         for await (const chunk of stream) fold.push(chunk);
