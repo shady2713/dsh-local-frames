@@ -6,10 +6,10 @@ import { normalizeRegion, parseSourceCsv } from '../src/csv.js';
 import { frameCount, frameTimestampsMs, hammingHex, dhashFromGray, DHASH_DISTANCE_MAX } from '../src/dhash.js';
 import { exceedsAttachmentLimits, fitAttachmentBox, halvedTarget, selectRequestImage } from '../src/imageFit.js';
 import { judgeBatch, TaskPause } from '../src/judge.js';
-import { csvCell, outcomeFor, parseModelOutput, VERDICT_DEFINITIONS, buildPrompt, chunkObjects } from '../src/prompt.js';
+import { csvCell, outcomeFor, parseModelOutput, VERDICT_DEFINITIONS, buildPrompt } from '../src/prompt.js';
 import { classifyFailure, createStreamFold, visionSessionId } from '../src/vision.js';
 import { splitForFamily, familyIdFor, exportFileName } from '../src/export.js';
-import type { VisionClient } from '../src/vision.js';
+import type { VisionClient, VisionResult } from '../src/vision.js';
 
 describe('frame plan', () => {
   it('uses a 2 second default, keeps one frame for a short video, and has no per-video cap', () => {
@@ -79,12 +79,17 @@ describe('model output', () => {
     expect(csvCell(null)).toBe('');
   });
 
-  it('keeps the section 7 definitions verbatim and batches above 8 objects', () => {
-    const prompt = buildPrompt([{ name: 'object-a', aliases: {}, definition: '一个对象。' }]);
+  it('keeps the section 7 definitions verbatim and puts every object into one prompt', () => {
+    const objects = Array.from({ length: 10 }, (_, index) => ({
+      name: `object-${index}`,
+      aliases: {},
+      definition: '一个对象。',
+    }));
+    const prompt = buildPrompt(objects);
     expect(prompt).toContain(VERDICT_DEFINITIONS);
     expect(prompt).toContain('画面里能确认这个对象存在。');
-    expect(prompt).not.toContain('object-b');
-    expect(chunkObjects([1, 2, 3, 4, 5, 6, 7, 8, 9])).toEqual([[1, 2, 3, 4, 5, 6, 7, 8], [9]]);
+    const table = prompt.split('对象表：')[1] ?? '';
+    expect([...table.matchAll(/"name":"([^"]+)"/gu)].map((match) => match[1])).toEqual(objects.map((object) => object.name));
   });
 });
 
@@ -201,6 +206,129 @@ describe('judge retries', () => {
     expect(result.ok).toBe(true);
     expect(waits).toEqual([3000]);
     expect(fake.calls).toBe(2);
+  });
+
+  it('retries timed-out calls and makes at most five attempts for one frame', async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const signals: Array<AbortSignal | undefined> = [];
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async (input) => {
+        calls += 1;
+        signals.push(input.signal);
+        if (calls < 5) return new Promise<VisionResult>(() => undefined);
+        return {
+          ok: true,
+          text: JSON.stringify({
+            objects: [{ name: 'object-a', verdict: 'ABSENT', visibility: 'CLEAR', confidence: 0.4, reason: '没有' }],
+          }),
+          tokens: 2,
+          ms: 1,
+        };
+      },
+    };
+    const result = await judgeBatch({
+      vision,
+      provider: 'p',
+      model: 'm',
+      objects,
+      imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+      beforeCall: () => undefined,
+      onAttempt: () => undefined,
+      credentialRetry: { used: true },
+      timeoutMs: 5,
+    });
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(5);
+    expect(waits).toEqual([1000, 5000, 10_000, 30_000]);
+    // Every timed-out attempt is aborted through its own AbortSignal.
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[3]?.aborted).toBe(true);
+    expect(signals[4]?.aborted).toBe(false);
+  });
+
+  it('stops after five timed-out attempts instead of retrying forever', async () => {
+    let calls = 0;
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async () => {
+        calls += 1;
+        return new Promise<VisionResult>(() => undefined);
+      },
+    };
+    const result = await judgeBatch({
+      vision,
+      provider: 'p',
+      model: 'm',
+      objects,
+      imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
+      sleep: async () => undefined,
+      beforeCall: () => undefined,
+      onAttempt: () => undefined,
+      credentialRetry: { used: true },
+      timeoutMs: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('call');
+      expect(result.attempts).toHaveLength(5);
+    }
+    expect(calls).toBe(5);
+  });
+
+  it('counts invalid JSON retries towards the five-attempt cap', async () => {
+    const fake = client([
+      { ok: false, kind: 'retryable', message: '超时' },
+      { ok: false, kind: 'retryable', message: '超时' },
+      { ok: true, text: 'nope', tokens: 1, ms: 1 },
+      { ok: true, text: '{', tokens: 1, ms: 1 },
+      { ok: true, text: '{"objects":[]}', tokens: 1, ms: 1 },
+    ]);
+    const result = await judgeBatch({
+      vision: fake.vision,
+      provider: 'p',
+      model: 'm',
+      objects,
+      imagePath: '/tmp/frame.jpg',
+      taskId: 'task-test',
+      sleep: async () => undefined,
+      beforeCall: () => undefined,
+      onAttempt: () => undefined,
+      credentialRetry: { used: true },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('format');
+      expect(result.attempts).toHaveLength(5);
+    }
+    expect(fake.calls).toBe(5);
+  });
+
+  it('does not retry missing credentials once the startup retry has been used', async () => {
+    const missing = client([{ ok: false, kind: 'credential_missing', message: '缺凭据' }]);
+    await expect(
+      judgeBatch({
+        vision: missing.vision,
+        provider: 'p',
+        model: 'm',
+        objects,
+        imagePath: '/tmp/frame.jpg',
+        taskId: 'task-test',
+        sleep: async () => undefined,
+        beforeCall: () => undefined,
+        onAttempt: () => undefined,
+        credentialRetry: { used: true },
+      }),
+    ).rejects.toMatchObject({ code: 'MODEL_CREDENTIAL' });
+    expect(missing.calls).toBe(1);
   });
 
   it('treats text followed by an error finish as a failed call', () => {

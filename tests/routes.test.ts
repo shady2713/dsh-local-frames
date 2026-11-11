@@ -14,6 +14,7 @@ const snapshot = {
     dataDirLimitGb: 50,
     budgetPerTask: 3000,
     frameIntervalSeconds: 2,
+    visionConcurrency: 2,
     exportDir: null,
     lastImportPath: null,
     allowRoots: [],
@@ -145,6 +146,20 @@ describe('path settings persistence', () => {
       expect(result.status).toBe(200);
       expect((result.json() as { data: { allowRoots: string[] } }).data.allowRoots).toEqual([root]);
       expect(new SettingsStore(h.db).load().allowRoots).toEqual([root]);
+    } finally {
+      h.db.close();
+    }
+  });
+
+  it('persists the judgment concurrency and rejects values outside 1..8', async () => {
+    const h = persistedRoutes();
+    try {
+      const saved = await postJson(h.routes, '/api/local-frames/settings', { visionConcurrency: 5 });
+      expect(saved.status).toBe(200);
+      expect(new SettingsStore(h.db).load().visionConcurrency).toBe(5);
+      const invalid = await postJson(h.routes, '/api/local-frames/settings', { visionConcurrency: 9 });
+      expect(invalid.status).toBe(400);
+      expect(new SettingsStore(h.db).load().visionConcurrency).toBe(5);
     } finally {
       h.db.close();
     }

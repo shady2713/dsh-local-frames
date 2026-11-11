@@ -17,6 +17,7 @@ describe('settings defaults and validation', () => {
     expect(settings.model).toBeNull();
     expect(settings.budgetPerTask).toBe(3000);
     expect(settings.frameIntervalSeconds).toBe(2);
+    expect(settings.visionConcurrency).toBe(2);
     expect(settings.allowRoots).toEqual([]);
     expect(settings.exportDir).toBeNull();
     expect(settings.lastImportPath).toBeNull();
@@ -70,14 +71,25 @@ describe('settings defaults and validation', () => {
     expect(() => parseSettings({ ...base, exportDir: 42 })).toThrow(/exportDir must be null or an absolute path/);
   });
 
+  it('accepts the vision-concurrency boundaries and rejects values outside 1..8', () => {
+    const base = defaultSettings();
+    expect(parseSettings({ ...base, visionConcurrency: 1 }).visionConcurrency).toBe(1);
+    expect(parseSettings({ ...base, visionConcurrency: 8 }).visionConcurrency).toBe(8);
+    expect(() => parseSettings({ ...base, visionConcurrency: 0 })).toThrow(SettingsError);
+    expect(() => parseSettings({ ...base, visionConcurrency: 9 })).toThrow(SettingsError);
+    expect(() => parseSettings({ ...base, visionConcurrency: 2.5 })).toThrow(SettingsError);
+  });
+
   it('merges a partial patch without losing other values', () => {
     const current = defaultSettings();
     const merged = mergeSettings(current, {
       frameIntervalSeconds: 5,
+      visionConcurrency: 4,
       exportDir: '/tmp/local-frames-exports',
       lastImportPath: '/tmp/local-frames-media',
     });
     expect(merged.frameIntervalSeconds).toBe(5);
+    expect(merged.visionConcurrency).toBe(4);
     expect(merged.budgetPerTask).toBe(3000);
     expect(merged.exportDir).toBe('/tmp/local-frames-exports');
     expect(merged.lastImportPath).toBe('/tmp/local-frames-media');
@@ -104,6 +116,7 @@ describe('settings defaults and validation', () => {
         .run('settings', JSON.stringify(legacy));
       const settings = new SettingsStore(db).load();
       expect(settings.allowRoots).toEqual([root]);
+      expect(settings.visionConcurrency).toBe(2);
       expect(settings.exportDir).toBeNull();
       expect(settings.lastImportPath).toBeNull();
     } finally {
@@ -129,6 +142,16 @@ describe('settings defaults and validation', () => {
       const exportDir = makeTempDir('lf-export-target-');
       new SettingsStore(db).update({ exportDir });
       expect(new SettingsStore(db).load().exportDir).toBe(exportDir);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('persists the vision concurrency across store instances', () => {
+    const db = openDatabase(makeTempDir());
+    try {
+      new SettingsStore(db).update({ visionConcurrency: 6 });
+      expect(new SettingsStore(db).load().visionConcurrency).toBe(6);
     } finally {
       db.close();
     }
