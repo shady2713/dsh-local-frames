@@ -3,7 +3,7 @@ import type { LocalFramesDatabase } from './db.js';
 import type { SettingsStore } from './settings.js';
 import type { EnvironmentChecker } from './versions.js';
 import { readProgress, readSpec } from './progress.js';
-import type { StatusSnapshot, TaskRow, TargetAliases } from './types.js';
+import type { FunnelStats, StatusFailedFrame, StatusSnapshot, TaskRow, TaskSummary, TaskTargetRef, TargetAliases } from './types.js';
 
 function parseJsonObject(text: string): Record<string, unknown> {
   try {
@@ -43,7 +43,8 @@ function latestTask(db: LocalFramesDatabase): TaskRow | null {
   return row ?? null;
 }
 
-function funnelFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapshot['funnel'] {
+/** The file funnel of one task; shared by the status snapshot and the task list. */
+export function funnelFor(db: LocalFramesDatabase, taskId: string | null): FunnelStats {
   if (taskId === null) {
     return {
       imported: 0,
@@ -121,6 +122,19 @@ function itemsFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapsho
   }));
 }
 
+/** FAILED frames of the current task; the page retries them one by one or in a batch. */
+function failedFramesFor(db: LocalFramesDatabase, taskId: string | null): StatusFailedFrame[] {
+  if (taskId === null) return [];
+  return db.raw
+    .prepare(
+      `SELECT frames.frame_id, frames.item_id, frames.t_ms, frames.error, items.local_path, items.title
+       FROM frames JOIN items ON items.item_id = frames.item_id
+       WHERE items.task_id = ? AND frames.state = 'FAILED'
+       ORDER BY items.created_at ASC, items.rowid ASC, frames.t_ms ASC, frames.rowid ASC`,
+    )
+    .all(taskId) as unknown as StatusFailedFrame[];
+}
+
 /** Compose the read-only status shared by `lf_status` and the plugin's status route. */
 export async function buildStatus(options: {
   db: LocalFramesDatabase;
@@ -178,6 +192,7 @@ export async function buildStatus(options: {
               "SELECT item_id, local_path, error_code FROM items WHERE task_id = ? AND state = 'ERROR' ORDER BY created_at ASC, rowid ASC",
             )
             .all(task.task_id) as Array<{ item_id: string; local_path: string; error_code: string | null }>),
+    failedFrames: failedFramesFor(db, task?.task_id ?? null),
     pause:
       task === null
         ? null
@@ -193,4 +208,42 @@ export async function buildStatus(options: {
     },
     environment: environmentReport,
   };
+}
+
+/** Objects recorded in a task spec, resolved to current names for the task list. */
+function targetRefsFor(db: LocalFramesDatabase, targetIds: readonly string[]): TaskTargetRef[] {
+  if (targetIds.length === 0) return [];
+  const rows = db.raw
+    .prepare(
+      `SELECT target_id, name FROM targets WHERE target_id IN (${targetIds.map(() => '?').join(',')})`,
+    )
+    .all(...targetIds) as Array<{ target_id: string; name: string }>;
+  const byId = new Map(rows.map((row) => [row.target_id, row.name]));
+  return targetIds.map((id) => ({ target_id: id, name: byId.get(id) ?? id }));
+}
+
+/**
+ * Read-only task history for `GET /api/local-frames/tasks`: every task, newest
+ * first, with its funnel, failed-frame count and selected objects. The page uses
+ * this list to export a completed task directly by task id.
+ */
+export function listTaskSummaries(db: LocalFramesDatabase): TaskSummary[] {
+  const rows = db.raw
+    .prepare(
+      'SELECT task_id, spec_json, progress_json, status, created_at, updated_at FROM tasks ORDER BY created_at DESC, rowid DESC',
+    )
+    .all() as unknown as TaskRow[];
+  return rows.map((row) => ({
+    task_id: row.task_id,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    funnel: funnelFor(db, row.task_id),
+    failedFrames: scalar(
+      db,
+      "SELECT COUNT(*) AS count FROM frames WHERE state = 'FAILED' AND item_id IN (SELECT item_id FROM items WHERE task_id = ?)",
+      row.task_id,
+    ),
+    targets: targetRefsFor(db, readSpec(row.spec_json).targetIds),
+  }));
 }

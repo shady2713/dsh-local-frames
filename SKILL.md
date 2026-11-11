@@ -17,4 +17,5 @@ Rules the agent must keep:
 - The model judges the user-defined objects only. Do not add aerial/real/quality/watermark judgments.
 - `1` means the model explicitly saw the object with `CLEAR`/`SMALL` visibility; `0` only when the model explicitly answered `ABSENT`; `UNSURE`, `TINY` and `OCCLUDED` stay empty.
 - Duplicate frames (`DUPLICATE`) are never sent to the model, never labeled and never exported.
-- Settings are edited on the plugin's settings pages; secrets and cookies never enter SQLite, logs or exports.
+- Settings, objects, task progress, task list and export live on the plugin's single「本地视频帧」page; secrets and cookies never enter SQLite, logs or exports.
+- The page's task list, per-task export and manual retry of failed videos/frames are UI/HTTP features; the only agent tools remain the six `lf_*` tools above.
