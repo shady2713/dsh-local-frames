@@ -1,6 +1,6 @@
 import { directorySizeBytes, freeDiskGb, DEFAULT_MIN_FREE_DISK_GB } from './disk.js';
 import type { LocalFramesDatabase } from './db.js';
-import { describeIngest, ingestPaths } from './ingest.js';
+import { acceptedCount, describeIngest, ingestPaths } from './ingest.js';
 import { InputError, validateVideoPath } from './input.js';
 import { newId, nowIso } from './ids.js';
 import { exportTask } from './export.js';
@@ -152,7 +152,7 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
   return {
     name: 'lf_status',
     description:
-      'Read local-frames status: settings without secrets, object list, task progress, file funnel including duplicate-frame skips, data-directory usage, and the environment check (Node/npm/ffmpeg/ffprobe/DSH/Git). Read-only.',
+      'Read local-frames status: settings without secrets, object list, task progress and item order, file funnel including duplicate-frame and previously-processed video skips, data-directory usage, and the environment check (Node/npm/ffmpeg/ffprobe/DSH/Git). Read-only.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: { schema: outputSchema(), render: renderText },
     isConcurrencySafe: () => true,
@@ -232,7 +232,7 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
   return {
     name: 'lf_collect_start',
     description:
-      'Create and start the single collection task: selected objects, optional first batch of local video paths, frame interval, disk cap, and model-call budget. Refuses when a running or paused task exists, the model or objects are missing, the allowlist is empty, or disk is insufficient.',
+      'Create and start the single collection task: selected objects, optional first batch of local video paths, frame interval, disk cap, and model-call budget. Videos already framed and labelled by an earlier task are skipped by default; pass force=true to rerun them. Refuses when a running or paused task exists, the model or objects are missing, the allowlist is empty, or disk is insufficient.',
     parameters: {
       type: 'object',
       properties: {
@@ -246,6 +246,10 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
           items: { type: 'string' },
           description: 'Optional first batch of absolute local video file or directory paths',
         },
+        force: {
+          type: 'boolean',
+          description: 'Explicitly rerun videos already framed and labelled by an earlier task (default false)',
+        },
       },
       additionalProperties: false,
     },
@@ -253,8 +257,10 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
     isConcurrencySafe: () => false,
     async execute(args: unknown): Promise<unknown> {
       const input = asRecord(args);
-      const unknown = unknownKeys(input, ['targetIds', 'paths']);
+      const unknown = unknownKeys(input, ['targetIds', 'paths', 'force']);
       if (unknown !== null) return fail(unknown);
+      if (input.force !== undefined && typeof input.force !== 'boolean') return fail('force 必须是布尔值');
+      const force = input.force === true;
       const targetIds = stringList(input.targetIds, 'targetIds');
       if (typeof targetIds === 'string') return fail(targetIds);
       const paths = stringList(input.paths, 'paths');
@@ -300,13 +306,14 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
           deps.dataDir,
           settings.allowRoots,
           paths.map((path) => ({ path, recursive: true })),
+          { force },
         );
       } catch (error) {
         deps.db.raw.prepare('DELETE FROM items WHERE task_id = ?').run(taskId);
         deps.db.raw.prepare('DELETE FROM tasks WHERE task_id = ?').run(taskId);
         return fail(`lf_collect_start 失败：${errorText(error)}`);
       }
-      if (report.added.length === 0) {
+      if (acceptedCount(report) === 0) {
         deps.db.raw.prepare('DELETE FROM tasks WHERE task_id = ?').run(taskId);
         const detail = report.rejected[0]?.message ?? report.existing[0]?.localPath ?? '没有可用的视频';
         return fail(report.existing.length > 0 ? `已存在：${detail}` : detail, {
@@ -318,8 +325,10 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
       return ok(`已开始任务。${describeIngest(report)}`, {
         task_id: taskId,
         target_ids: spec.targetIds,
-        item_ids: report.added.map((item) => item.itemId),
+        item_ids: [...report.added, ...report.skipped, ...report.rerun].map((item) => item.itemId),
         added: report.added,
+        skipped: report.skipped,
+        rerun: report.rerun,
         existing: report.existing,
         rejected: report.rejected,
       });
@@ -331,12 +340,16 @@ export function createVideoAddTool(deps: ToolDeps): ToolDefinition {
   return {
     name: 'lf_video_add',
     description:
-      'Add one absolute local video file path or directory path to the running or paused task. The file is only read; it is never moved, renamed, or modified. Directories are scanned recursively by default.',
+      'Add one absolute local video file path or directory path to the running or paused task. The file is only read; it is never moved, renamed, or modified. Directories are scanned recursively by default. Videos already framed and labelled by an earlier task are skipped by default; pass force=true to rerun them.',
     parameters: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute local video file or directory path' },
         recursive: { type: 'boolean', description: 'Recursively scan a directory (default true)' },
+        force: {
+          type: 'boolean',
+          description: 'Explicitly rerun this file or directory even if a previous task already processed it (default false)',
+        },
       },
       required: ['path'],
       additionalProperties: false,
@@ -345,11 +358,13 @@ export function createVideoAddTool(deps: ToolDeps): ToolDefinition {
     isConcurrencySafe: () => false,
     async execute(args: unknown): Promise<unknown> {
       const input = asRecord(args);
-      const unknown = unknownKeys(input, ['path', 'recursive']);
+      const unknown = unknownKeys(input, ['path', 'recursive', 'force']);
       if (unknown !== null) return fail(unknown);
       if (typeof input.path !== 'string') return fail('path 必须是字符串');
       if (input.recursive !== undefined && typeof input.recursive !== 'boolean') return fail('recursive 必须是布尔值');
+      if (input.force !== undefined && typeof input.force !== 'boolean') return fail('force 必须是布尔值');
       const recursive = input.recursive !== false;
+      const force = input.force === true;
       const task = activeTask(deps.db);
       if (task === null) {
         try {
@@ -364,28 +379,34 @@ export function createVideoAddTool(deps: ToolDeps): ToolDefinition {
         return fail('任务已结束，不能再添加视频', { task_id: task.task_id });
       }
       try {
-        const report = await ingestPaths(deps.db, task.task_id, deps.dataDir, deps.settings.load().allowRoots, [
-          { path: input.path, recursive },
-        ]);
-        if (report.added.length === 0 && report.existing.length > 0 && report.rejected.length === 0) {
-          return fail('已存在', {
-            task_id: task.task_id,
-            item_id: report.existing[0]?.itemId ?? null,
-            path: report.existing[0]?.localPath ?? input.path,
-          });
-        }
-        if (report.added.length === 0) {
+        const report = await ingestPaths(
+          deps.db,
+          task.task_id,
+          deps.dataDir,
+          deps.settings.load().allowRoots,
+          [{ path: input.path, recursive }],
+          { force },
+        );
+        if (acceptedCount(report) === 0) {
+          if (report.existing.length > 0 && report.rejected.length === 0) {
+            return fail('已存在', {
+              task_id: task.task_id,
+              item_id: report.existing[0]?.itemId ?? null,
+              path: report.existing[0]?.localPath ?? input.path,
+            });
+          }
           return fail(report.rejected[0]?.message ?? '没有可用的视频', {
             code: report.rejected[0]?.code ?? 'EMPTY',
             rejected: report.rejected,
           });
         }
         deps.pipeline.kick();
-        const elsewhere = report.added.some((item) => item.usedElsewhere);
-        return ok(`${describeIngest(report)}${elsewhere ? '。该文件已在其他任务使用' : ''}`, {
+        return ok(describeIngest(report), {
           task_id: task.task_id,
-          item_ids: report.added.map((item) => item.itemId),
+          item_ids: [...report.added, ...report.skipped, ...report.rerun].map((item) => item.itemId),
           added: report.added,
+          skipped: report.skipped,
+          rerun: report.rerun,
           existing: report.existing,
           rejected: report.rejected,
         });

@@ -25,7 +25,7 @@ export interface Settings {
 }
 
 export type TaskStatus = 'RUNNING' | 'PAUSED' | 'DONE' | 'CANCELLED';
-export type ItemState = 'NEW' | 'PROBED' | 'FRAMED' | 'DONE' | 'ERROR';
+export type ItemState = 'NEW' | 'PROBED' | 'FRAMED' | 'DONE' | 'ERROR' | 'SKIPPED';
 export type FrameState = 'PENDING' | 'JUDGED' | 'FAILED' | 'DUPLICATE';
 export type Verdict = 'PRESENT' | 'ABSENT' | 'UNSURE';
 export type Visibility = 'CLEAR' | 'SMALL' | 'TINY' | 'OCCLUDED';
@@ -80,6 +80,18 @@ export interface EnvironmentReport {
   checkedAt: string;
 }
 
+/** One imported video in task order; `position` starts at 1 and is the processing order. */
+export interface StatusItem {
+  position: number;
+  item_id: string;
+  local_path: string;
+  title: string;
+  state: string;
+  error_code: string | null;
+  /** True when a previous task already framed and labelled these exact bytes. */
+  skipped: boolean;
+}
+
 export interface StatusSnapshot {
   plugin: { id: string; version: string };
   settings: Settings;
@@ -100,10 +112,12 @@ export interface StatusSnapshot {
     probed: number;
     frames: number;
     duplicatesSkipped: number;
+    skipped: number;
     judged: number;
     exportable: number;
     errors: number;
   };
+  items: StatusItem[];
   errors: Array<{ item_id: string; local_path: string; error_code: string | null }>;
   pause: { code: string | null; reason: string | null } | null;
   dataDir: {

@@ -153,6 +153,7 @@ describe('agent tool registration', () => {
         probed: 0,
         frames: 0,
         duplicatesSkipped: 0,
+        skipped: 0,
         judged: 0,
         exportable: 0,
         errors: 0,

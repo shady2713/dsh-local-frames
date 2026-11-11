@@ -294,10 +294,23 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function stateLabel(item) {
+      switch (item.state) {
+        case 'NEW': return '等待处理';
+        case 'PROBED': return '已探测时长';
+        case 'FRAMED': return '抽帧/打标中';
+        case 'DONE': return '完成';
+        case 'ERROR': return `失败${item.error_code ? `（${item.error_code}）` : ''}`;
+        case 'SKIPPED': return '已跳过（先前已处理）';
+        default: return item.state;
+      }
+    }
+
     function ProgressPage() {
       const { status, error, setError, reload } = useStatus();
       const [path, setPath] = React.useState('');
       const [recursive, setRecursive] = React.useState(true);
+      const [force, setForce] = React.useState(false);
       const [message, setMessage] = React.useState('');
       const lastPathFilled = React.useRef(false);
       React.useEffect(() => {
@@ -379,6 +392,7 @@ window.__ModuleLoader__.load({
                     ['探测成功', funnel.probed],
                     ['抽帧', funnel.frames],
                     ['重复跳过', funnel.duplicatesSkipped],
+                    ['已跳过（先前已处理）', funnel.skipped],
                     ['已打标', funnel.judged],
                     ['可导出', funnel.exportable],
                     ['ERROR 文件', funnel.errors],
@@ -410,6 +424,25 @@ window.__ModuleLoader__.load({
               '导出',
             ),
           ),
+        ),
+        h(
+          'div',
+          { className: 'lf-card' },
+          h('h3', null, '处理顺序'),
+          (status?.items ?? []).length === 0
+            ? Paragraph('还没有视频')
+            : h(
+                'ol',
+                null,
+                status.items.map((item) =>
+                  h(
+                    'li',
+                    { key: item.item_id, className: item.state === 'ERROR' ? 'lf-bad' : item.skipped ? 'lf-muted' : undefined },
+                    `#${item.position} ${item.title || item.local_path} · ${stateLabel(item)}`,
+                  ),
+                ),
+              ),
+          Paragraph('按导入顺序处理；目录内按路径字典序。'),
         ),
         h(
           'div',
@@ -450,12 +483,18 @@ window.__ModuleLoader__.load({
               h('input', { type: 'checkbox', checked: recursive, onChange: (event) => setRecursive(event.target.checked) }),
             ),
             h(
+              'label',
+              { className: 'lf-field' },
+              h('span', null, '强制重跑（忽略先前已处理跳过）'),
+              h('input', { type: 'checkbox', checked: force, onChange: (event) => setForce(event.target.checked) }),
+            ),
+            h(
               'button',
               {
                 className: 'lf-button',
                 type: 'button',
                 onClick: () => {
-                  request('/api/local-frames/videos/add', { path: path.trim(), recursive })
+                  request('/api/local-frames/videos/add', { path: path.trim(), recursive, force })
                     .then((payload) => {
                       setMessage(payload.message || '已添加');
                       reload();

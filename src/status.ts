@@ -45,7 +45,16 @@ function latestTask(db: LocalFramesDatabase): TaskRow | null {
 
 function funnelFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapshot['funnel'] {
   if (taskId === null) {
-    return { imported: 0, probed: 0, frames: 0, duplicatesSkipped: 0, judged: 0, exportable: 0, errors: 0 };
+    return {
+      imported: 0,
+      probed: 0,
+      frames: 0,
+      duplicatesSkipped: 0,
+      skipped: 0,
+      judged: 0,
+      exportable: 0,
+      errors: 0,
+    };
   }
   return {
     imported: scalar(db, 'SELECT COUNT(*) AS count FROM items WHERE task_id = ?', taskId),
@@ -64,6 +73,7 @@ function funnelFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapsh
       "SELECT COUNT(*) AS count FROM frames WHERE state = 'DUPLICATE' AND item_id IN (SELECT item_id FROM items WHERE task_id = ?)",
       taskId,
     ),
+    skipped: scalar(db, "SELECT COUNT(*) AS count FROM items WHERE task_id = ? AND state = 'SKIPPED'", taskId),
     judged: scalar(
       db,
       "SELECT COUNT(*) AS count FROM frames WHERE state = 'JUDGED' AND item_id IN (SELECT item_id FROM items WHERE task_id = ?)",
@@ -79,6 +89,36 @@ function funnelFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapsh
     ),
     errors: scalar(db, "SELECT COUNT(*) AS count FROM items WHERE task_id = ? AND state = 'ERROR'", taskId),
   };
+}
+
+/**
+ * Task items in processing order. `created_at` plus `rowid` is the same order
+ * the state machine and export use, so the progress page shows the real queue
+ * (including videos skipped as previously processed).
+ */
+function itemsFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapshot['items'] {
+  if (taskId === null) return [];
+  const rows = db.raw
+    .prepare(
+      `SELECT item_id, local_path, title, state, error_code FROM items
+       WHERE task_id = ? ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(taskId) as Array<{
+    item_id: string;
+    local_path: string;
+    title: string;
+    state: string;
+    error_code: string | null;
+  }>;
+  return rows.map((row, index) => ({
+    position: index + 1,
+    item_id: row.item_id,
+    local_path: row.local_path,
+    title: row.title,
+    state: row.state,
+    error_code: row.error_code,
+    skipped: row.state === 'SKIPPED',
+  }));
 }
 
 /** Compose the read-only status shared by `lf_status` and the plugin's status route. */
@@ -128,6 +168,7 @@ export async function buildStatus(options: {
             progress: parseJsonObject(task.progress_json),
           },
     funnel: funnelFor(db, task?.task_id ?? null),
+    items: itemsFor(db, task?.task_id ?? null),
     errors:
       task === null
         ? []

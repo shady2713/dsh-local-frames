@@ -250,7 +250,6 @@ export class Pipeline {
   }
 
   private async advance(task: TaskRecord): Promise<StepResult> {
-    this.assertCapacity(task.task_id);
     this.markFramedItemsDone(task.task_id);
     const item = this.deps.db.raw
       .prepare(
@@ -259,10 +258,14 @@ export class Pipeline {
          ORDER BY created_at ASC, rowid ASC LIMIT 1`,
       )
       .get(task.task_id) as ItemRecord | undefined;
+    // Finish before the capacity check: a folder whose only remaining rows are
+    // recorded failures (or previously processed skips) must end, not wait on
+    // disk/budget checks that only gate new work.
     if (item === undefined) {
       this.finishTask(task.task_id);
       return 'idle';
     }
+    this.assertCapacity(task.task_id);
     if (item.state === 'NEW') {
       await this.probe(item);
       return 'worked';
@@ -275,7 +278,11 @@ export class Pipeline {
     return 'worked';
   }
 
-  /** An item with no pending frame is finished even if its earlier frames failed. */
+  /**
+   * An item with no usable pending frame is finished even if its earlier
+   * frames failed or were duplicates. This also prevents a malformed PENDING
+   * row without a frame file from keeping the task alive forever.
+   */
   private markFramedItemsDone(taskId: string): void {
     this.deps.db.raw
       .prepare(
@@ -647,11 +654,15 @@ export class Pipeline {
     const errors = this.deps.db.raw
       .prepare("SELECT local_path, error_code FROM items WHERE task_id = ? AND state = 'ERROR' ORDER BY created_at ASC")
       .all(taskId) as Array<{ local_path: string; error_code: string | null }>;
+    const skipped = this.deps.db.raw
+      .prepare("SELECT COUNT(*) AS count FROM items WHERE task_id = ? AND state = 'SKIPPED'")
+      .get(taskId) as { count?: number } | undefined;
     this.mutateProgress(taskId, (progress) => {
       progress.report = {
         modelCalls: this.callCount(taskId),
         outcomes: counts,
         errors,
+        skipped: typeof skipped?.count === 'number' ? skipped.count : 0,
       };
       progress.pauseCode = null;
       progress.pauseReason = null;
