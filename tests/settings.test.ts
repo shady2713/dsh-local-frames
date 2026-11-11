@@ -21,6 +21,7 @@ describe('settings defaults and validation', () => {
     expect(settings.allowRoots).toEqual([]);
     expect(settings.exportDir).toBeNull();
     expect(settings.lastImportPath).toBeNull();
+    expect(settings.recentExports).toEqual([]);
     expect(settings.dataDirLimitGb).toBe(DEFAULT_SETTINGS.dataDirLimitGb);
   });
 
@@ -119,6 +120,7 @@ describe('settings defaults and validation', () => {
       expect(settings.visionConcurrency).toBe(2);
       expect(settings.exportDir).toBeNull();
       expect(settings.lastImportPath).toBeNull();
+      expect(settings.recentExports).toEqual([]);
     } finally {
       db.close();
     }
@@ -131,6 +133,35 @@ describe('settings defaults and validation', () => {
       expect(new SettingsStore(db).load().allowRoots).toEqual([]);
       new SettingsStore(db).update({ allowRoots: [root] });
       expect(new SettingsStore(db).load().allowRoots).toEqual([root]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('defaults and sanitizes recent export records without losing other settings', () => {
+    const db = openDatabase(makeTempDir());
+    try {
+      const store = new SettingsStore(db);
+      const valid = {
+        exported_at: '2026-01-01T00:00:00.000Z',
+        task_id: 'task-1',
+        target_ids: ['t1'],
+        target_names: ['object-a'],
+        images: 3,
+        train: 2,
+        val: 1,
+        directory: '/tmp/exports/2026-01-01_000000',
+        zip: false,
+      };
+      expect(mergeSettings(defaultSettings(), { recentExports: [valid] }).recentExports).toEqual([valid]);
+      // Corrupt or partial records are derived history: drop them, keep the list usable.
+      expect(mergeSettings(defaultSettings(), { recentExports: [{ nope: true }, valid] }).recentExports).toEqual([valid]);
+      expect(mergeSettings(defaultSettings(), { recentExports: 'bad' }).recentExports).toEqual([]);
+      const series = parseSettings({
+        ...defaultSettings(),
+        recentExports: Array.from({ length: 12 }, (_, index) => ({ ...valid, directory: `/tmp/exports/${index}` })),
+      });
+      expect(series.recentExports).toHaveLength(10);
     } finally {
       db.close();
     }

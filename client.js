@@ -22,6 +22,14 @@ window.__ModuleLoader__.load({
 .lf-table th, .lf-table td { text-align:left; border-bottom:1px solid var(--dsw-alias-border-l1,#e5e6eb); padding:6px 4px; vertical-align:top; }
 .lf-ok { color:#15803d; }
 .lf-bad { color:#c2410c; }
+.lf-toast { display:flex; flex-direction:column; gap:8px; border:1px solid; border-radius:10px; padding:12px 14px; font-size:14px; font-weight:600; }
+.lf-toast-ok { border-color:#15803d; background:#f0fdf4; color:#166534; }
+.lf-toast-error { border-color:#c2410c; background:#fff7ed; color:#9a3412; }
+.lf-toast-path { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; font-weight:400; word-break:break-all; color:var(--dsw-alias-label-secondary,#646a73); }
+.lf-toast-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.lf-checks { display:flex; flex-wrap:wrap; gap:10px 16px; }
+.lf-check { display:flex; align-items:center; gap:6px; font-size:13px; }
+.lf-check input { margin:0; }
 `;
 
     function Paragraph(text, extraClass) {
@@ -62,6 +70,11 @@ window.__ModuleLoader__.load({
 
     function isAbsolutePath(value) {
       return value.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(value);
+    }
+
+    function formatTime(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
     }
 
     function SettingsPage() {
@@ -312,6 +325,11 @@ window.__ModuleLoader__.load({
       const [recursive, setRecursive] = React.useState(true);
       const [force, setForce] = React.useState(false);
       const [message, setMessage] = React.useState('');
+      const [selectedTargets, setSelectedTargets] = React.useState([]);
+      const [exportZip, setExportZip] = React.useState(false);
+      const [exportByObject, setExportByObject] = React.useState(false);
+      const [exporting, setExporting] = React.useState(false);
+      const [toast, setToast] = React.useState(null);
       const lastPathFilled = React.useRef(false);
       React.useEffect(() => {
         if (lastPathFilled.current || status === null) return;
@@ -325,6 +343,71 @@ window.__ModuleLoader__.load({
       }, [reload]);
       const task = status?.task;
       const funnel = status?.funnel;
+      const taskTargetIds = Array.isArray(task?.target_ids) ? task.target_ids : [];
+      const taskTargets = (status?.targets ?? []).filter(
+        (target) => !target.archived && (taskTargetIds.length === 0 || taskTargetIds.includes(target.target_id)),
+      );
+      const recentExports = status?.settings?.recentExports ?? [];
+      React.useEffect(() => {
+        setSelectedTargets([]);
+      }, [task?.task_id]);
+      const toggleTarget = (targetId) => {
+        setSelectedTargets((current) =>
+          current.includes(targetId) ? current.filter((id) => id !== targetId) : [...current, targetId],
+        );
+      };
+      const runExport = () => {
+        if (exporting) return;
+        setExporting(true);
+        setMessage('');
+        setError('');
+        const body = { zip: exportZip, byObject: exportByObject };
+        if (task !== null && task !== undefined) body.taskId = task.task_id;
+        if (selectedTargets.length > 0) body.targetIds = selectedTargets;
+        request('/api/local-frames/export', body)
+          .then((payload) => {
+            const data = payload.data ?? {};
+            setToast({
+              kind: 'ok',
+              text: `已导出 ${data.images ?? 0} 帧（train ${data.train ?? 0} / val ${data.val ?? 0}）`,
+              path: typeof data.directory === 'string' ? data.directory : '',
+            });
+            reload();
+          })
+          .catch((reason) => {
+            setToast({ kind: 'error', text: `导出失败：${reason instanceof Error ? reason.message : String(reason)}`, path: '' });
+          })
+          .finally(() => setExporting(false));
+      };
+      const openExport = (directory) => {
+        request('/api/local-frames/export/open', { path: directory })
+          .then(() =>
+            setToast((current) =>
+              current === null ? current : { ...current, kind: 'ok', text: '已在主机打开导出目录', path: directory },
+            ),
+          )
+          .catch((reason) => {
+            setToast({
+              kind: 'error',
+              text: `打开目录失败：${reason instanceof Error ? reason.message : String(reason)}。可复制路径后手动打开。`,
+              path: directory,
+            });
+          });
+      };
+      const copyExportPath = (directory) => {
+        if (
+          typeof navigator === 'undefined' ||
+          navigator.clipboard === undefined ||
+          typeof navigator.clipboard.writeText !== 'function'
+        ) {
+          setToast({ kind: 'error', text: '当前浏览器不支持剪贴板，请手动复制路径。', path: directory });
+          return;
+        }
+        navigator.clipboard
+          .writeText(directory)
+          .then(() => setToast({ kind: 'ok', text: '已复制路径', path: directory }))
+          .catch(() => setToast({ kind: 'error', text: '复制失败，请手动复制路径。', path: directory }));
+      };
       const act = (action) => {
         if (task === null || task === undefined) return;
         request('/api/local-frames/control', { taskId: task.task_id, action })
@@ -341,6 +424,25 @@ window.__ModuleLoader__.load({
         Paragraph('关窗口不会停止采集，要停请点暂停。', 'lf-note'),
         error ? h('p', { className: 'lf-error' }, error) : null,
         message ? h('p', { className: 'lf-ok' }, message) : null,
+        toast
+          ? h(
+              'div',
+              { className: `lf-toast ${toast.kind === 'ok' ? 'lf-toast-ok' : 'lf-toast-error'}`, role: 'status' },
+              h('div', null, toast.text),
+              toast.path ? h('div', { className: 'lf-toast-path' }, toast.path) : null,
+              h(
+                'div',
+                { className: 'lf-toast-actions' },
+                toast.path
+                  ? h('button', { className: 'lf-button', type: 'button', onClick: () => openExport(toast.path) }, '打开目录')
+                  : null,
+                toast.path
+                  ? h('button', { className: 'lf-button', type: 'button', onClick: () => copyExportPath(toast.path) }, '复制路径')
+                  : null,
+                h('button', { className: 'lf-button', type: 'button', onClick: () => setToast(null) }, '关闭'),
+              ),
+            )
+          : null,
         h(
           'div',
           { className: 'lf-card' },
@@ -406,24 +508,79 @@ window.__ModuleLoader__.load({
             h('button', { className: 'lf-button', type: 'button', onClick: () => act('pause') }, '暂停'),
             h('button', { className: 'lf-button', type: 'button', onClick: () => act('resume') }, '继续'),
             h('button', { className: 'lf-button', type: 'button', onClick: () => act('cancel') }, '取消'),
-            h(
-              'button',
-              {
-                className: 'lf-button',
-                type: 'button',
-                onClick: () => {
-                  const body = task === null || task === undefined ? {} : { taskId: task.task_id };
-                  request('/api/local-frames/export', body)
-                    .then((payload) => {
-                      setMessage(`已导出到 ${payload.data.directory}`);
-                      reload();
-                    })
-                    .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-                },
-              },
-              '导出',
-            ),
           ),
+        ),
+        h(
+          'div',
+          { className: 'lf-card' },
+          h('h3', null, '导出'),
+          Paragraph('只复用已完成任务的帧与标签，不重新抽帧、不调用模型；不勾选对象时导出任务全部对象。'),
+          taskTargets.length === 0
+            ? Paragraph('当前任务没有可导出的对象。')
+            : h(
+                'div',
+                { className: 'lf-checks' },
+                taskTargets.map((target) =>
+                  h(
+                    'label',
+                    { key: target.target_id, className: 'lf-check' },
+                    h('input', {
+                      type: 'checkbox',
+                      checked: selectedTargets.includes(target.target_id),
+                      onChange: () => toggleTarget(target.target_id),
+                    }),
+                    target.name,
+                  ),
+                ),
+              ),
+          h(
+            'div',
+            { className: 'lf-row' },
+            h(
+              'label',
+              { className: 'lf-check' },
+              h('input', { type: 'checkbox', checked: exportZip, onChange: (event) => setExportZip(event.target.checked) }),
+              '导出为 zip',
+            ),
+            h(
+              'label',
+              { className: 'lf-check' },
+              h('input', {
+                type: 'checkbox',
+                checked: exportByObject,
+                onChange: (event) => setExportByObject(event.target.checked),
+              }),
+              '按对象分目录（images/<对象>/）',
+            ),
+            h('button', { className: 'lf-button', type: 'button', disabled: exporting, onClick: runExport }, exporting ? '导出中…' : '导出'),
+          ),
+          Paragraph('每次导出都新建目录或 zip，不会覆盖之前的导出；写入设置页配置的导出目录。'),
+        ),
+        h(
+          'div',
+          { className: 'lf-card' },
+          h('h3', null, '最近导出'),
+          recentExports.length === 0
+            ? Paragraph('还没有导出记录')
+            : h(
+                'table',
+                { className: 'lf-table' },
+                h('thead', null, h('tr', null, ['时间', '对象', '数量', '路径'].map((label) => h('th', { key: label }, label)))),
+                h(
+                  'tbody',
+                  null,
+                  recentExports.map((record) =>
+                    h(
+                      'tr',
+                      { key: record.directory },
+                      h('td', null, formatTime(record.exported_at)),
+                      h('td', null, (record.target_names ?? []).join('、') || '全部对象'),
+                      h('td', null, `${record.images ?? 0}${record.zip ? '（zip）' : ''}`),
+                      h('td', { className: 'lf-toast-path' }, record.directory),
+                    ),
+                  ),
+                ),
+              ),
         ),
         h(
           'div',

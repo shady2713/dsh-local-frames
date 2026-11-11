@@ -513,6 +513,7 @@ describe('issue #7: old database and settings stay readable', () => {
       expect(loaded.visionConcurrency).toBe(2);
       expect(loaded.exportDir).toBeNull();
       expect(loaded.lastImportPath).toBeNull();
+      expect(loaded.recentExports).toEqual([]);
 
       const now = new Date().toISOString();
       h.db.raw

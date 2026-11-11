@@ -3,7 +3,7 @@ import type { LocalFramesDatabase } from './db.js';
 import { acceptedCount, describeIngest, ingestPaths } from './ingest.js';
 import { InputError, validateVideoPath } from './input.js';
 import { newId, nowIso } from './ids.js';
-import { exportTask } from './export.js';
+import { exportTask, recentExportFrom, rememberRecentExport } from './export.js';
 import { controlTask } from './pipeline.js';
 import type { Pipeline } from './pipeline.js';
 import { emptyProgress } from './progress.js';
@@ -129,6 +129,20 @@ function stringList(value: unknown, field: string): string[] | string {
     items.push(entry.trim());
   }
   return items;
+}
+
+/** Export object ids: omitted means every object in the task; duplicates are droppable. */
+function optionalTargetIds(value: unknown): string[] | null | string {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) return 'targetIds 必须是字符串数组';
+  if (value.length > 100) return 'targetIds 最多 100 个对象';
+  const ids: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || entry.trim().length === 0) return 'targetIds 必须是非空字符串数组';
+    const id = entry.trim();
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids;
 }
 
 function blockingEnvironment(report: { checks: Array<{ blocking: boolean; status: string; label: string; detail: string | null }> }): string[] {
@@ -455,11 +469,21 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
   return {
     name: 'lf_export',
     description:
-      'Export the qualified frames of a task into a new timestamped directory under the configured export directory (default dataDir/exports), with images/, labels.csv, sources.csv and README.txt. Omit taskId for the current or most recently finished task.',
+      'Export qualified frames of a finished task without extracting frames or calling the model. Every run writes a new artifact under the configured export directory (default dataDir/exports): a timestamped directory, or a timestamped zip. Pass targetIds to export only selected objects (labels.csv keeps only those columns); pass byObject for images/<object>/ directories and zip for a zip. Omit taskId for the current or most recently finished task.',
     parameters: {
       type: 'object',
       properties: {
         taskId: { type: 'string', description: 'Task id; omit for the current or latest finished task' },
+        targetIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Object ids to export; omit or empty to export every object selected by the task',
+        },
+        zip: { type: 'boolean', description: 'Write a timestamped zip instead of a directory (default false)' },
+        byObject: {
+          type: 'boolean',
+          description: 'Place images under images/<object directory>/, one copy per matched object (default false)',
+        },
       },
       additionalProperties: false,
     },
@@ -467,8 +491,12 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
     isConcurrencySafe: () => false,
     async execute(args: unknown): Promise<unknown> {
       const input = asRecord(args);
-      const unknown = unknownKeys(input, ['taskId']);
+      const unknown = unknownKeys(input, ['taskId', 'targetIds', 'zip', 'byObject']);
       if (unknown !== null) return fail(unknown);
+      if (input.zip !== undefined && typeof input.zip !== 'boolean') return fail('zip 必须是布尔值');
+      if (input.byObject !== undefined && typeof input.byObject !== 'boolean') return fail('byObject 必须是布尔值');
+      const targetIds = optionalTargetIds(input.targetIds);
+      if (typeof targetIds === 'string') return fail(targetIds);
       const requested = typeof input.taskId === 'string' ? input.taskId.trim() : '';
       const taskId = requested.length > 0 ? requested : defaultExportTask(deps.db);
       if (taskId === null) return fail('没有可导出的任务');
@@ -477,14 +505,26 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
         | undefined;
       if (typeof existing?.task_id !== 'string') return fail('任务不存在', { task_id: taskId });
       try {
-        const exported = exportTask(deps.db, deps.dataDir, taskId, new Date(), deps.settings.load().exportDir);
-        return ok(`已导出 ${exported.images} 张图片`, {
+        const exported = exportTask(deps.db, deps.dataDir, taskId, new Date(), deps.settings.load().exportDir, {
+          targetIds,
+          zip: input.zip === true,
+          byObject: input.byObject === true,
+        });
+        const recentExports = rememberRecentExport(deps.settings, recentExportFrom(exported, taskId));
+        return ok(`已导出 ${exported.images} 帧到 ${exported.directory}`, {
           task_id: taskId,
           directory: exported.directory,
           images: exported.images,
+          imageCopies: exported.imageCopies,
           train: exported.train,
           val: exported.val,
           duplicatesSkipped: exported.duplicatesSkipped,
+          zip: exported.zip,
+          byObject: exported.byObject,
+          targetIds: exported.targetIds,
+          targetNames: exported.targetNames,
+          stats: exported.stats,
+          recentExports,
         });
       } catch (error) {
         return fail(`导出失败：${errorText(error)}`, { task_id: taskId });

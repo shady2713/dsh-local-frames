@@ -1,7 +1,8 @@
+import { statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { isAbsolute } from 'node:path';
+import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 import type { LocalFramesDatabase } from './db.js';
-import { exportTask } from './export.js';
+import { ExportSelectionError, exportTask, recentExportFrom, rememberRecentExport } from './export.js';
 import { HttpError, guard, readJsonBody, requireMethod, sendJson } from './http.js';
 import { describeIngest, acceptedCount, ingestPaths } from './ingest.js';
 import { nowIso } from './ids.js';
@@ -19,6 +20,8 @@ export interface RoutesDeps {
   pipeline?: Pipeline;
   listModels?: () => Promise<Array<{ provider: string; model: string; name: string }>>;
   recheckEnvironment?: () => Promise<EnvironmentReport>;
+  /** Injected host file-manager opener; tests replace it, production uses `ctx.subprocess`. */
+  openPath?: (directory: string) => Promise<void>;
 }
 
 interface Ready {
@@ -176,11 +179,74 @@ export function createRoutes(
       requireMethod(req, ['POST']);
       const services = ready(deps);
       const body = await readJsonBody(req);
-      const requested = isRecord(body) && typeof body.taskId === 'string' ? body.taskId.trim() : '';
+      const record = isRecord(body) ? body : {};
+      if (record.zip !== undefined && typeof record.zip !== 'boolean') {
+        throw new HttpError(400, 'INVALID_BODY', 'zip 必须是布尔值');
+      }
+      if (record.byObject !== undefined && typeof record.byObject !== 'boolean') {
+        throw new HttpError(400, 'INVALID_BODY', 'byObject 必须是布尔值');
+      }
+      let targetIds: string[] | null = null;
+      if (record.targetIds !== undefined) {
+        if (!Array.isArray(record.targetIds) || record.targetIds.length > 100) {
+          throw new HttpError(400, 'INVALID_BODY', 'targetIds 必须是最多 100 个字符串的数组');
+        }
+        targetIds = [];
+        for (const entry of record.targetIds) {
+          if (typeof entry !== 'string' || entry.trim().length === 0) {
+            throw new HttpError(400, 'INVALID_BODY', 'targetIds 必须是非空字符串数组');
+          }
+          const id = entry.trim();
+          if (!targetIds.includes(id)) targetIds.push(id);
+        }
+      }
+      const requested = typeof record.taskId === 'string' ? record.taskId.trim() : '';
       const taskId = requested.length > 0 ? requested : (activeTaskId(services.db) ?? latestDoneTask(services.db));
       if (taskId === null) throw new HttpError(404, 'NO_TASK', '没有可导出的任务');
-      const exported = exportTask(services.db, services.dataDir, taskId, new Date(), services.settings.load().exportDir);
-      sendJson(res, 200, { status: 'OK', data: { task_id: taskId, ...exported } });
+      let exported;
+      try {
+        exported = exportTask(services.db, services.dataDir, taskId, new Date(), services.settings.load().exportDir, {
+          targetIds,
+          zip: record.zip === true,
+          byObject: record.byObject === true,
+        });
+      } catch (error) {
+        if (error instanceof ExportSelectionError) throw new HttpError(400, 'INVALID_TARGETS', error.message);
+        throw new HttpError(500, 'EXPORT_FAILED', error instanceof Error ? error.message : String(error));
+      }
+      const recentExports = rememberRecentExport(services.settings, recentExportFrom(exported, taskId));
+      sendJson(res, 200, { status: 'OK', data: { task_id: taskId, ...exported, recentExports } });
+      return;
+    }
+    if (pathname === '/api/local-frames/export/open') {
+      requireMethod(req, ['POST']);
+      const services = ready(deps);
+      const body = await readJsonBody(req);
+      if (!isRecord(body) || typeof body.path !== 'string' || body.path.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_BODY', 'path 必须是非空字符串');
+      }
+      const requested = body.path.trim();
+      if (!isAbsolute(requested)) throw new HttpError(400, 'INVALID_PATH', 'path 必须是绝对路径');
+      const exportRoot = services.settings.load().exportDir ?? resolve(services.dataDir, 'exports');
+      const target = resolve(normalize(requested));
+      const root = resolve(normalize(exportRoot));
+      if (target !== root && !target.startsWith(`${root}${sep}`)) {
+        throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
+      }
+      let directory: string;
+      try {
+        const stat = statSync(target);
+        directory = stat.isDirectory() ? target : dirname(target);
+      } catch {
+        throw new HttpError(404, 'NOT_FOUND', '导出结果不存在');
+      }
+      if (deps.openPath === undefined) throw new HttpError(500, 'NOT_READY', '当前环境无法打开目录');
+      try {
+        await deps.openPath(directory);
+      } catch (error) {
+        throw new HttpError(409, 'OPEN_FAILED', error instanceof Error ? error.message : String(error));
+      }
+      sendJson(res, 200, { status: 'OK', data: { path: target, directory, opened: true } });
       return;
     }
     throw new HttpError(404, 'NOT_FOUND', `no local-frames route for ${pathname}`);

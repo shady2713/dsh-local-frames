@@ -1,8 +1,11 @@
 import { isAbsolute, normalize, resolve } from 'node:path';
 import type { LocalFramesDatabase } from './db.js';
-import type { Settings } from './types.js';
+import type { RecentExport, Settings } from './types.js';
 
 const SETTINGS_KEY = 'settings';
+
+/** Recent exports are derived UI history, so the list is capped, not unbounded. */
+export const MAX_RECENT_EXPORTS = 10;
 
 /**
  * Defaults fixed by the specification (§12.1): one model slot (unset until the
@@ -22,6 +25,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   exportDir: null,
   lastImportPath: null,
   allowRoots: [],
+  recentExports: [],
 });
 
 export const FRAME_INTERVAL_MIN_SECONDS = 1;
@@ -46,6 +50,7 @@ export function defaultSettings(): Settings {
     exportDir: null,
     lastImportPath: null,
     allowRoots: [],
+    recentExports: [],
   };
 }
 
@@ -115,6 +120,43 @@ function readOptionalAbsolutePath(value: unknown, field: string): string | null 
   return resolve(normalize(trimmed));
 }
 
+/**
+ * Read the recent-export history. It is derived data, not user configuration:
+ * a legacy settings row without the field means an empty list, and individual
+ * malformed records are dropped instead of resetting every other setting.
+ */
+function readRecentExports(value: unknown): RecentExport[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return [];
+  const records: RecentExport[] = [];
+  for (const entry of value) {
+    if (records.length >= MAX_RECENT_EXPORTS) break;
+    if (!isRecord(entry)) continue;
+    if (typeof entry.exported_at !== 'string' || !/^\d{4}-/u.test(entry.exported_at)) continue;
+    if (typeof entry.task_id !== 'string' || entry.task_id.length === 0) continue;
+    if (typeof entry.directory !== 'string' || entry.directory.length === 0) continue;
+    if (typeof entry.images !== 'number' || !Number.isInteger(entry.images) || entry.images < 0) continue;
+    const targetIds = Array.isArray(entry.target_ids)
+      ? entry.target_ids.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : [];
+    const targetNames = Array.isArray(entry.target_names)
+      ? entry.target_names.filter((name): name is string => typeof name === 'string')
+      : [];
+    records.push({
+      exported_at: entry.exported_at,
+      task_id: entry.task_id,
+      target_ids: targetIds,
+      target_names: targetNames,
+      images: entry.images,
+      train: typeof entry.train === 'number' ? entry.train : 0,
+      val: typeof entry.val === 'number' ? entry.val : 0,
+      directory: entry.directory,
+      zip: entry.zip === true,
+    });
+  }
+  return records;
+}
+
 const SETTINGS_FIELDS = [
   'model',
   'dataDirLimitGb',
@@ -124,6 +166,7 @@ const SETTINGS_FIELDS = [
   'exportDir',
   'lastImportPath',
   'allowRoots',
+  'recentExports',
 ] as const;
 
 /** Validate one complete settings object; unknown fields are rejected rather than guessed. */
@@ -148,6 +191,7 @@ export function parseSettings(value: unknown): Settings {
     exportDir: readOptionalAbsolutePath(value.exportDir, 'exportDir'),
     lastImportPath: readOptionalAbsolutePath(value.lastImportPath, 'lastImportPath'),
     allowRoots: readAllowRoots(value.allowRoots),
+    recentExports: readRecentExports(value.recentExports),
   };
 }
 
@@ -165,6 +209,7 @@ export function mergeSettings(current: Settings, patch: unknown): Settings {
     exportDir: 'exportDir' in patch ? patch.exportDir : current.exportDir,
     lastImportPath: 'lastImportPath' in patch ? patch.lastImportPath : current.lastImportPath,
     allowRoots: 'allowRoots' in patch ? patch.allowRoots : current.allowRoots,
+    recentExports: 'recentExports' in patch ? patch.recentExports : current.recentExports,
   });
 }
 
