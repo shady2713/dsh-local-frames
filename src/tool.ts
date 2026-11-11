@@ -152,7 +152,7 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
   return {
     name: 'lf_status',
     description:
-      'Read local-frames status: settings without secrets, object list, task progress, file funnel including duplicate-frame skips, data-directory usage, and the environment check (Node/npm/ffmpeg/ffprobe/DSH/Git). Read-only.',
+      'Read local-frames status: settings without secrets, object list, task progress and item order, file funnel including duplicate-frame and previously-processed video skips, data-directory usage, and the environment check (Node/npm/ffmpeg/ffprobe/DSH/Git). Read-only.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: { schema: outputSchema(), render: renderText },
     isConcurrencySafe: () => true,

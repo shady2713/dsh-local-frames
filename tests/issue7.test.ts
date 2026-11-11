@@ -395,6 +395,30 @@ describe('issue #7: explicit force rerun', () => {
     }
   });
 
+  it('does not skip a video that an earlier task recorded as ERROR', async () => {
+    const h = setup();
+    try {
+      const bad = writeFixtureFile(join(h.root, 'bad-prior.mp4'), 'bad-prior');
+      h.createTask('task-prior-bad');
+      await h.ingest('task-prior-bad', bad);
+      await h.pipeline.runUntilIdle();
+      const prior = h.db.raw.prepare('SELECT state, error_code FROM items WHERE task_id = ?').get('task-prior-bad') as {
+        state?: string;
+        error_code?: string | null;
+      };
+      expect(prior).toMatchObject({ state: 'ERROR', error_code: 'PROBE_FAILED' });
+
+      h.createTask('task-retry-bad');
+      const report = await h.ingest('task-retry-bad', bad);
+      expect(report.skipped).toEqual([]);
+      expect(report.added).toHaveLength(1);
+      const state = h.db.raw.prepare('SELECT state FROM items WHERE task_id = ?').get('task-retry-bad') as { state?: string };
+      expect(state.state).toBe('NEW');
+    } finally {
+      h.db.close();
+    }
+  });
+
   it('applies default skip and explicit force through the lf_collect_start tool entry point', async () => {
     const h = setup();
     try {

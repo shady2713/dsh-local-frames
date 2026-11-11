@@ -59,20 +59,13 @@ function usedElsewhere(db: LocalFramesDatabase, digest: string, taskId: string):
 }
 
 /**
- * Issue #7: a video counts as previously processed when an earlier task framed
- * it and wrote at least one label. It is then skipped by default in new tasks.
+ * Issue #7: a prior item reaches DONE only after the state machine framed it
+ * and no usable pending frame remains. Such bytes are skipped by default in
+ * new tasks; ERROR or still-running items are imported normally.
  */
 function previouslyProcessed(db: LocalFramesDatabase, digest: string, taskId: string): boolean {
   const row = db.raw
-    .prepare(
-      `SELECT 1 AS found FROM items
-       WHERE file_sha256 = ? AND task_id != ? AND state = 'DONE'
-         AND EXISTS (
-           SELECT 1 FROM frames
-           WHERE frames.item_id = items.item_id AND frames.state = 'JUDGED'
-         )
-       LIMIT 1`,
-    )
+    .prepare("SELECT 1 AS found FROM items WHERE file_sha256 = ? AND task_id != ? AND state = 'DONE' LIMIT 1")
     .get(digest, taskId) as { found?: number } | undefined;
   return row !== undefined;
 }
