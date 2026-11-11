@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { copyFileSync, linkSync, mkdirSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, normalize, resolve } from 'node:path';
 import { removeOwnedFrame } from './cleanup.js';
 import type { LocalFramesDatabase } from './db.js';
 import { sourceFromProbe } from './ingest.js';
@@ -129,10 +129,17 @@ function stamp(now: Date): string {
 }
 
 /**
- * Write exports/<time>/ with hardlinked images, labels.csv, sources.csv and README.txt.
+ * Write `<exportDir>/<time>/` (default `dataDir/exports/<time>/`) with hardlinked
+ * images, labels.csv, sources.csv and README.txt. User files are only read.
  * The directory is not modified again after this function returns.
  */
-export function exportTask(db: LocalFramesDatabase, dataDir: string, taskId: string, now: Date = new Date()): ExportResult {
+export function exportTask(
+  db: LocalFramesDatabase,
+  dataDir: string,
+  taskId: string,
+  now: Date = new Date(),
+  exportDir: string | null = null,
+): ExportResult {
   const task = db.raw.prepare('SELECT spec_json, progress_json, status FROM tasks WHERE task_id = ?').get(taskId) as
     | { spec_json?: string; progress_json?: string; status?: string }
     | undefined;
@@ -166,7 +173,8 @@ export function exportTask(db: LocalFramesDatabase, dataDir: string, taskId: str
     .get(taskId) as { count?: number } | undefined;
   const duplicatesSkipped = typeof duplicateRow?.count === 'number' ? duplicateRow.count : 0;
 
-  const exportsRoot = resolve(dataDir, 'exports');
+  if (exportDir !== null && !isAbsolute(exportDir)) throw new Error('导出目录必须是绝对路径');
+  const exportsRoot = exportDir === null ? resolve(dataDir, 'exports') : resolve(normalize(exportDir));
   mkdirSync(exportsRoot, { recursive: true });
   let folder = stamp(now);
   let directory = join(exportsRoot, folder);

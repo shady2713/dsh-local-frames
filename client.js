@@ -60,12 +60,17 @@ window.__ModuleLoader__.load({
       return { status, error, setError, reload };
     }
 
+    function isAbsolutePath(value) {
+      return value.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(value);
+    }
+
     function SettingsPage() {
       const { status, error, setError, reload } = useStatus();
       const [models, setModels] = React.useState([]);
       const [limit, setLimit] = React.useState('50');
       const [budget, setBudget] = React.useState('3000');
       const [interval, setIntervalSeconds] = React.useState('2');
+      const [exportDir, setExportDir] = React.useState('');
       const [root, setRoot] = React.useState('');
       const [message, setMessage] = React.useState('');
       React.useEffect(() => {
@@ -78,17 +83,21 @@ window.__ModuleLoader__.load({
         setLimit(String(status.settings.dataDirLimitGb));
         setBudget(String(status.settings.budgetPerTask));
         setIntervalSeconds(String(status.settings.frameIntervalSeconds));
+        setExportDir(status.settings.exportDir ?? '');
       }, [status]);
-      const save = (patch) => {
+      const save = (patch, options) => {
         setMessage('');
+        setError('');
         request('/api/local-frames/settings', patch)
           .then(() => {
             setMessage('已保存');
+            if (options && options.clearRoot) setRoot('');
             reload();
           })
           .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
       };
       const settings = status?.settings;
+      const defaultExportDir = status?.dataDir?.path ? `${status.dataDir.path}/exports` : '数据目录/exports';
       const modelValue = settings?.model === null || settings?.model === undefined
         ? ''
         : `${settings.model.provider}\n${settings.model.model}`;
@@ -138,6 +147,17 @@ window.__ModuleLoader__.load({
           h('h3', null, '数据与抽帧'),
           Paragraph(`数据目录（只读）：${status?.dataDir?.path ?? '读取中'}`),
           h(
+            'label',
+            { className: 'lf-field' },
+            '导出目录（绝对路径）',
+            h('input', {
+              value: exportDir,
+              placeholder: '留空使用默认目录',
+              onChange: (event) => setExportDir(event.target.value),
+            }),
+          ),
+          h('p', { className: 'lf-hint' }, `留空时导出到默认目录：${defaultExportDir}`),
+          h(
             'div',
             { className: 'lf-row' },
             h('label', { className: 'lf-field' }, '磁盘上限 GB', h('input', { value: limit, onChange: (event) => setLimit(event.target.value) })),
@@ -148,11 +168,32 @@ window.__ModuleLoader__.load({
               {
                 className: 'lf-button',
                 type: 'button',
-                onClick: () => save({
-                  dataDirLimitGb: Number(limit),
-                  budgetPerTask: Number(budget),
-                  frameIntervalSeconds: Number(interval),
-                }),
+                onClick: () => {
+                  if (settings === null || settings === undefined) {
+                    setError('设置尚未载入，请稍候再试');
+                    return;
+                  }
+                  const nextRoot = root.trim();
+                  const dir = exportDir.trim();
+                  if (nextRoot.length > 0 && !isAbsolutePath(nextRoot)) {
+                    setError(`白名单根目录必须是绝对路径：${nextRoot}`);
+                    return;
+                  }
+                  if (dir.length > 0 && !isAbsolutePath(dir)) {
+                    setError(`导出目录必须是绝对路径：${dir}`);
+                    return;
+                  }
+                  save(
+                    {
+                      dataDirLimitGb: Number(limit),
+                      budgetPerTask: Number(budget),
+                      frameIntervalSeconds: Number(interval),
+                      exportDir: dir.length > 0 ? dir : null,
+                      allowRoots: nextRoot.length > 0 ? [...settings.allowRoots, nextRoot] : settings.allowRoots,
+                    },
+                    { clearRoot: nextRoot.length > 0 },
+                  );
+                },
               },
               '保存',
             ),
@@ -195,9 +236,19 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 onClick: () => {
                   const next = root.trim();
-                  if (next.length === 0 || settings === null || settings === undefined) return;
-                  save({ allowRoots: [...settings.allowRoots, next] });
-                  setRoot('');
+                  if (next.length === 0) {
+                    setError('请输入白名单根目录（绝对路径）');
+                    return;
+                  }
+                  if (!isAbsolutePath(next)) {
+                    setError(`白名单根目录必须是绝对路径：${next}`);
+                    return;
+                  }
+                  if (settings === null || settings === undefined) {
+                    setError('设置尚未载入，请稍候再试');
+                    return;
+                  }
+                  save({ allowRoots: [...settings.allowRoots, next] }, { clearRoot: true });
                 },
               },
               '添加',

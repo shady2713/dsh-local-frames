@@ -15,6 +15,10 @@ export interface Settings {
   dataDirLimitGb: number;
   budgetPerTask: number;
   frameIntervalSeconds: number;
+  /** Absolute export directory; null means the default `<dataDir>/exports`. */
+  exportDir: string | null;
+  /** Last absolute path submitted on the progress page; refilled when it reopens. */
+  lastImportPath: string | null;
   allowRoots: string[];
 }
 

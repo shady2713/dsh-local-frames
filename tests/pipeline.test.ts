@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync, symlinkSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import { dhashFromGray, hammingHex } from '../src/dhash.js';
@@ -221,6 +221,14 @@ describe('ffmpeg frames, dedup, and unchanged originals', () => {
         splits.set(cells[2] ?? '', cells[1] ?? '');
       }
       for (const [family, split] of families) expect(splits.get(family)).toBe(split);
+
+      const customRoot = makeTempDir('lf-export-custom-');
+      const custom = exportTask(db, dataDir, taskId, new Date(Date.now() + 2000), customRoot);
+      expect(custom.directory.startsWith(`${customRoot}${sep}`)).toBe(true);
+      expect(custom.images).toBe(exported.images);
+      expect(readdirSync(join(custom.directory, 'images')).length).toBe(custom.images);
+      expect(readFileSync(join(custom.directory, 'labels.csv'), 'utf8')).toContain('file_name,split,family_id');
+      expect(existsSync(join(dataDir, 'exports'))).toBe(true);
     } finally {
       db.close();
     }

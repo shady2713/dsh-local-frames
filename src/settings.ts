@@ -17,6 +17,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   dataDirLimitGb: 50,
   budgetPerTask: 3000,
   frameIntervalSeconds: 2,
+  exportDir: null,
+  lastImportPath: null,
   allowRoots: [],
 });
 
@@ -36,6 +38,8 @@ export function defaultSettings(): Settings {
     dataDirLimitGb: DEFAULT_SETTINGS.dataDirLimitGb,
     budgetPerTask: DEFAULT_SETTINGS.budgetPerTask,
     frameIntervalSeconds: DEFAULT_SETTINGS.frameIntervalSeconds,
+    exportDir: null,
+    lastImportPath: null,
     allowRoots: [],
   };
 }
@@ -90,14 +94,36 @@ function readAllowRoots(value: unknown): string[] {
   return roots;
 }
 
+/**
+ * Read an optional absolute path. Missing fields (legacy rows written before the
+ * path fields existed) and null/blank values mean "use the default", so an old
+ * settings JSON still parses and keeps its allowRoots instead of falling back
+ * to defaults.
+ */
+function readOptionalAbsolutePath(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw new SettingsError(`${field} must be null or an absolute path`);
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > 4096) throw new SettingsError(`${field} must be at most 4096 characters`);
+  if (!isAbsolute(trimmed)) throw new SettingsError(`${field} must be absolute: ${trimmed}`);
+  return resolve(normalize(trimmed));
+}
+
+const SETTINGS_FIELDS = [
+  'model',
+  'dataDirLimitGb',
+  'budgetPerTask',
+  'frameIntervalSeconds',
+  'exportDir',
+  'lastImportPath',
+  'allowRoots',
+] as const;
+
 /** Validate one complete settings object; unknown fields are rejected rather than guessed. */
 export function parseSettings(value: unknown): Settings {
   if (!isRecord(value)) throw new SettingsError('settings must be a JSON object');
-  rejectUnknown(
-    value,
-    ['model', 'dataDirLimitGb', 'budgetPerTask', 'frameIntervalSeconds', 'allowRoots'],
-    'settings',
-  );
+  rejectUnknown(value, SETTINGS_FIELDS, 'settings');
   return {
     model: readModel(value.model),
     dataDirLimitGb: readInteger(value.dataDirLimitGb, 'dataDirLimitGb', 1, 1_000_000),
@@ -108,6 +134,8 @@ export function parseSettings(value: unknown): Settings {
       FRAME_INTERVAL_MIN_SECONDS,
       FRAME_INTERVAL_MAX_SECONDS,
     ),
+    exportDir: readOptionalAbsolutePath(value.exportDir, 'exportDir'),
+    lastImportPath: readOptionalAbsolutePath(value.lastImportPath, 'lastImportPath'),
     allowRoots: readAllowRoots(value.allowRoots),
   };
 }
@@ -115,17 +143,15 @@ export function parseSettings(value: unknown): Settings {
 /** Apply a partial patch to the current settings, validating the merged result. */
 export function mergeSettings(current: Settings, patch: unknown): Settings {
   if (!isRecord(patch)) throw new SettingsError('settings patch must be a JSON object');
-  rejectUnknown(
-    patch,
-    ['model', 'dataDirLimitGb', 'budgetPerTask', 'frameIntervalSeconds', 'allowRoots'],
-    'settings patch',
-  );
+  rejectUnknown(patch, SETTINGS_FIELDS, 'settings patch');
   return parseSettings({
     model: 'model' in patch ? patch.model : current.model,
     dataDirLimitGb: 'dataDirLimitGb' in patch ? patch.dataDirLimitGb : current.dataDirLimitGb,
     budgetPerTask: 'budgetPerTask' in patch ? patch.budgetPerTask : current.budgetPerTask,
     frameIntervalSeconds:
       'frameIntervalSeconds' in patch ? patch.frameIntervalSeconds : current.frameIntervalSeconds,
+    exportDir: 'exportDir' in patch ? patch.exportDir : current.exportDir,
+    lastImportPath: 'lastImportPath' in patch ? patch.lastImportPath : current.lastImportPath,
     allowRoots: 'allowRoots' in patch ? patch.allowRoots : current.allowRoots,
   });
 }

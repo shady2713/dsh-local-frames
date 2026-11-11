@@ -5,7 +5,15 @@ import { mockRequest, mockResponse } from './helpers.js';
 
 const snapshot = {
   plugin: { id: 'local-frames', version: '0.1.0' },
-  settings: { model: null, dataDirLimitGb: 50, budgetPerTask: 3000, frameIntervalSeconds: 2, allowRoots: [] },
+  settings: {
+    model: null,
+    dataDirLimitGb: 50,
+    budgetPerTask: 3000,
+    frameIntervalSeconds: 2,
+    exportDir: null,
+    lastImportPath: null,
+    allowRoots: [],
+  },
   targets: [],
   task: null,
   funnel: { imported: 0, probed: 0, frames: 0, duplicatesSkipped: 0, judged: 0, exportable: 0, errors: 0 },

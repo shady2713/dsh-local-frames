@@ -157,7 +157,7 @@ export function createRoutes(
       const requested = isRecord(body) && typeof body.taskId === 'string' ? body.taskId.trim() : '';
       const taskId = requested.length > 0 ? requested : (activeTaskId(services.db) ?? latestDoneTask(services.db));
       if (taskId === null) throw new HttpError(404, 'NO_TASK', '没有可导出的任务');
-      const exported = exportTask(services.db, services.dataDir, taskId);
+      const exported = exportTask(services.db, services.dataDir, taskId, new Date(), services.settings.load().exportDir);
       sendJson(res, 200, { status: 'OK', data: { task_id: taskId, ...exported } });
       return;
     }
