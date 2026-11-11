@@ -248,6 +248,29 @@ describe('zip export, object directories and stats', () => {
     }
   });
 
+  it('places each frame once without byObject, even when several selected objects match', () => {
+    const dataDir = makeTempDir('lf-export-flat-');
+    const db = openDatabase(dataDir);
+    try {
+      const seeded = seedExportTask(db, dataDir);
+      const at = new Date('2026-05-06T07:08:09.000Z');
+      const zipped = exportTask(db, dataDir, seeded.taskId, at, null, { zip: true });
+      const names = [...readZipEntries(zipped.directory).keys()].filter((name) => name.startsWith('images/'));
+      expect(names.sort()).toEqual([0, 1, 2].map((index) => `images/${frameName(seeded, index)}`).sort());
+      expect(new Set(names).size).toBe(names.length);
+      expect(zipped.imageCopies).toBe(zipped.images);
+      expect(zipped.stats.image_copies).toBe(3);
+
+      const flat = exportTask(db, dataDir, seeded.taskId, at, null, { targetIds: [seeded.targetA, seeded.targetB] });
+      expect(readdirSync(join(flat.directory, 'images')).sort()).toEqual(
+        [0, 1, 2].map((index) => frameName(seeded, index)).sort(),
+      );
+      expect(flat.imageCopies).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
   it('sanitizes object directory names and keeps them unique', () => {
     const used = new Set<string>();
     expect(safeObjectDirectoryName('汽车 A/B', used)).toBe('汽车-A-B');

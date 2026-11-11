@@ -396,20 +396,20 @@ export function exportTask(
     const fileName = exportFileName(frame.title, frame.frame_id, usedNames);
     const frameLabels = byFrame.get(frame.frame_id);
     const qualified = targets.filter((target) => frameLabels?.get(target.target_id)?.outcome === 'QUALIFIED');
-    // A legacy task may have no object columns; its qualified frames still export flat.
-    if (targets.length > 0 && qualified.length === 0) continue;
+    // Full exports keep the previous behaviour (every qualified frame); selections are already filtered in SQL.
+    if (filtered && qualified.length === 0) continue;
     const primary = qualified[0];
     const labelName = primary?.directory === null || primary?.directory === undefined
       ? fileName
       : `${primary.directory}/${fileName}`;
+    // Without byObject every frame is placed once at images/<file>, however many objects match.
+    const placements: Array<ExportTarget | null> = chosen.byObject && qualified.length > 0 ? qualified : [null];
     if (chosen.zip) {
-      const placements = qualified.length > 0 ? qualified : [null];
       for (const target of placements) {
         const prefix = target?.directory === null || target?.directory === undefined ? '' : `${target.directory}/`;
         zipImages.push({ name: `images/${prefix}${fileName}`, source: frame.path, compress: false });
       }
     } else {
-      const placements = qualified.length > 0 ? qualified : [null];
       for (const target of placements) {
         const destination = target?.directory === null || target?.directory === undefined
           ? join(imagesDir ?? artifact, fileName)
@@ -417,7 +417,7 @@ export function exportTask(
         placeImage(frame.path, destination);
       }
     }
-    imageCopies += qualified.length > 0 ? qualified.length : 1;
+    imageCopies += placements.length;
 
     const cells = [labelName, split, family];
     for (const target of targets) {
