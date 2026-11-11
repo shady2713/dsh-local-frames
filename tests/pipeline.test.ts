@@ -397,14 +397,14 @@ describe('restart and failure accounting', () => {
     }
   });
 
-  it('splits more than eight objects into separate model calls and writes labels only after every batch validates', async () => {
+  it('judges all ten task objects in one model call and writes a verdict for each', async () => {
     const dataDir = makeTempDir('lf-batch-');
     const db = openDatabase(dataDir);
     const settings = new SettingsStore(db);
     settings.update({ model: { provider: 'example', model: 'vision' }, budgetPerTask: 20 });
     const now = new Date().toISOString();
     const targetIds: string[] = [];
-    for (let index = 1; index <= 9; index += 1) {
+    for (let index = 1; index <= 10; index += 1) {
       const id = `tgt-${index}`;
       targetIds.push(id);
       db.raw
@@ -462,11 +462,10 @@ describe('restart and failure accounting', () => {
     const pipeline = new Pipeline({ db, settings, dataDir, media, vision, sleep: async () => undefined, minFreeGb: 0 });
     try {
       await pipeline.runUntilIdle();
-      expect(prompts).toHaveLength(2);
-      expect(prompts[0]?.split('对象表：')[1]?.match(/"name":"/gu)?.length).toBe(8);
-      expect(prompts[1]?.split('对象表：')[1]?.match(/"name":"/gu)?.length).toBe(1);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]?.split('对象表：')[1]?.match(/"name":"/gu)?.length).toBe(10);
       const labels = db.raw.prepare('SELECT COUNT(*) AS count FROM labels WHERE outcome = ?').get('QUALIFIED') as { count?: number };
-      expect(labels.count).toBe(9);
+      expect(labels.count).toBe(10);
       const frame = db.raw.prepare('SELECT state FROM frames WHERE frame_id = ?').get('frame') as { state?: string };
       expect(frame.state).toBe('JUDGED');
     } finally {

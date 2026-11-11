@@ -8,7 +8,7 @@ import { durationFromProbe, withDuration } from './ingest.js';
 import { newId, nowIso } from './ids.js';
 import { judgeBatch, TaskPause, TaskStopped, type JudgeAttempt } from './judge.js';
 import { readJpegInfo, type MediaClient } from './media.js';
-import { chunkObjects, outcomeFor, type PromptObject } from './prompt.js';
+import { outcomeFor, type PromptObject } from './prompt.js';
 import {
   CALL_FAIL_LIMIT,
   MODEL_RETRY_MS,
@@ -19,7 +19,7 @@ import {
   type TaskProgress,
 } from './progress.js';
 import type { SettingsStore } from './settings.js';
-import type { Outcome, Verdict, Visibility } from './types.js';
+import type { Verdict, Visibility } from './types.js';
 import type { VisionClient } from './vision.js';
 
 export interface PipelineDeps {
@@ -398,45 +398,41 @@ export class Pipeline {
     if (model === null) throw new TaskPause('NO_MODEL', '未选择模型');
     const targets = this.loadObjects(spec.targetIds);
     if (targets.length === 0) throw new TaskPause('NO_TARGET', '任务没有可判断的对象');
-    const batches = chunkObjects(targets);
-    const accepted: Array<{ object: PromptObject; verdict: Verdict; visibility: Visibility; confidence: number; reason: string }> = [];
     const modelName = `${model.provider}/${model.model}`.slice(0, 200);
-    for (const batch of batches) {
-      const result = await judgeBatch({
-        vision: this.deps.vision,
-        provider: model.provider,
-        model: model.model,
-        objects: batch,
-        imagePath: frame.path,
-        taskId: task.task_id,
-        sleep: (ms) => this.sleep(ms),
-        beforeCall: () => {
-          this.assertBudget(task.task_id);
-          this.assertCapacity(task.task_id);
-        },
-        onAttempt: (attempt) => this.insertCall(frame.frame_id, modelName, attempt),
-        credentialRetry: this.credentialRetry,
-      });
-      if (!result.ok) {
-        if (result.reason === 'format') {
-          this.failModelFrame(task.task_id, frame.frame_id, frame.path, result.message);
-        } else {
-          this.noteCallStreak(task.task_id);
-        }
-        return;
+    const result = await judgeBatch({
+      vision: this.deps.vision,
+      provider: model.provider,
+      model: model.model,
+      objects: targets,
+      imagePath: frame.path,
+      taskId: task.task_id,
+      sleep: (ms) => this.sleep(ms),
+      beforeCall: () => {
+        this.assertBudget(task.task_id);
+        this.assertCapacity(task.task_id);
+      },
+      onAttempt: (attempt) => this.insertCall(frame.frame_id, modelName, attempt),
+      credentialRetry: this.credentialRetry,
+    });
+    if (!result.ok) {
+      if (result.reason === 'format') {
+        this.failModelFrame(task.task_id, frame.frame_id, frame.path, result.message);
+      } else {
+        this.noteCallStreak(task.task_id);
       }
-      for (const object of result.objects) {
-        const source = batch.find((entry) => entry.name === object.name);
-        if (source === undefined) continue;
-        accepted.push({
-          object: source,
-          verdict: object.verdict,
-          visibility: object.visibility,
-          confidence: object.confidence,
-          reason: object.reason,
-        });
-      }
+      return;
     }
+    const accepted = targets.map((source) => {
+      const object = result.objects.find((entry) => entry.name === source.name);
+      if (object === undefined) throw new TaskPause('INTERNAL', `模型输出缺少对象 ${source.name}`);
+      return {
+        object: source,
+        verdict: object.verdict,
+        visibility: object.visibility,
+        confidence: object.confidence,
+        reason: object.reason,
+      };
+    });
     this.commitLabels(task.task_id, frame.frame_id, frame.path, accepted);
   }
 

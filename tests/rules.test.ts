@@ -6,7 +6,7 @@ import { normalizeRegion, parseSourceCsv } from '../src/csv.js';
 import { frameCount, frameTimestampsMs, hammingHex, dhashFromGray, DHASH_DISTANCE_MAX } from '../src/dhash.js';
 import { exceedsAttachmentLimits, fitAttachmentBox, halvedTarget, selectRequestImage } from '../src/imageFit.js';
 import { judgeBatch, TaskPause } from '../src/judge.js';
-import { csvCell, outcomeFor, parseModelOutput, VERDICT_DEFINITIONS, buildPrompt, chunkObjects } from '../src/prompt.js';
+import { csvCell, outcomeFor, parseModelOutput, VERDICT_DEFINITIONS, buildPrompt } from '../src/prompt.js';
 import { classifyFailure, createStreamFold, visionSessionId } from '../src/vision.js';
 import { splitForFamily, familyIdFor, exportFileName } from '../src/export.js';
 import type { VisionClient } from '../src/vision.js';
@@ -79,12 +79,17 @@ describe('model output', () => {
     expect(csvCell(null)).toBe('');
   });
 
-  it('keeps the section 7 definitions verbatim and batches above 8 objects', () => {
-    const prompt = buildPrompt([{ name: 'object-a', aliases: {}, definition: '一个对象。' }]);
+  it('keeps the section 7 definitions verbatim and puts every object into one prompt', () => {
+    const objects = Array.from({ length: 10 }, (_, index) => ({
+      name: `object-${index}`,
+      aliases: {},
+      definition: '一个对象。',
+    }));
+    const prompt = buildPrompt(objects);
     expect(prompt).toContain(VERDICT_DEFINITIONS);
     expect(prompt).toContain('画面里能确认这个对象存在。');
-    expect(prompt).not.toContain('object-b');
-    expect(chunkObjects([1, 2, 3, 4, 5, 6, 7, 8, 9])).toEqual([[1, 2, 3, 4, 5, 6, 7, 8], [9]]);
+    const table = prompt.split('对象表：')[1] ?? '';
+    expect([...table.matchAll(/"name":"([^"]+)"/gu)].map((match) => match[1])).toEqual(objects.map((object) => object.name));
   });
 });
 

@@ -1,8 +1,5 @@
 import type { Outcome, TargetAliases, Verdict, Visibility } from './types.js';
 
-/** §7.4: one model call judges at most this many objects. */
-export const OBJECTS_PER_CALL = 8;
-
 /**
  * §7.3 definitions, copied verbatim. Callers may only prepend the output
  * schema and append the object table; these sentences are not rewritten.
@@ -47,14 +44,6 @@ export interface ModelObject {
 const VERDICTS = new Set<Verdict>(['PRESENT', 'ABSENT', 'UNSURE']);
 const VISIBILITIES = new Set<Visibility>(['CLEAR', 'SMALL', 'TINY', 'OCCLUDED']);
 const OBJECT_KEYS = new Set(['name', 'verdict', 'visibility', 'confidence', 'reason']);
-
-export function chunkObjects<T>(objects: readonly T[], size = OBJECTS_PER_CALL): T[][] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < objects.length; index += size) {
-    chunks.push(objects.slice(index, index + size));
-  }
-  return chunks;
-}
 
 export function buildPrompt(objects: readonly PromptObject[]): string {
   const table = objects.map((object) =>
