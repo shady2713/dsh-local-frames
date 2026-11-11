@@ -97,7 +97,7 @@ export interface EnvironmentReport {
   checkedAt: string;
 }
 
-/** One imported video in task order; `position` starts at 1 and is the processing order. */
+/** File funnel counts of one task. */
 export interface FunnelStats {
   imported: number;
   probed: number;
@@ -146,6 +146,7 @@ export interface RetryResult {
   skipped: Array<{ id: string; kind: 'item' | 'frame'; reason: string }>;
 }
 
+/** One imported video in task order; `position` starts at 1 and is the processing order. */
 export interface StatusItem {
   position: number;
   item_id: string;
