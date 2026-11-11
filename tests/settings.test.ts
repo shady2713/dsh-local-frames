@@ -18,6 +18,8 @@ describe('settings defaults and validation', () => {
     expect(settings.budgetPerTask).toBe(3000);
     expect(settings.frameIntervalSeconds).toBe(2);
     expect(settings.allowRoots).toEqual([]);
+    expect(settings.exportDir).toBeNull();
+    expect(settings.lastImportPath).toBeNull();
     expect(settings.dataDirLimitGb).toBe(DEFAULT_SETTINGS.dataDirLimitGb);
   });
 
@@ -51,16 +53,85 @@ describe('settings defaults and validation', () => {
     for (const root of settings.allowRoots) expect(isAbsolute(root)).toBe(true);
   });
 
-  it('rejects unknown top-level fields instead of guessing', () => {
-    expect(() => parseSettings({ ...defaultSettings(), secret: 'x' })).toThrow(/unknown field/);
+  it('accepts absolute export and import paths and rejects relative values', () => {
+    const base = defaultSettings();
+    const settings = parseSettings({
+      ...base,
+      exportDir: '/tmp/local-frames-exports/',
+      lastImportPath: '/tmp/local-frames-media/in',
+    });
+    expect(settings.exportDir).toBe('/tmp/local-frames-exports');
+    expect(settings.lastImportPath).toBe('/tmp/local-frames-media/in');
+    const unset = parseSettings({ ...base, exportDir: null, lastImportPath: null });
+    expect(unset.exportDir).toBeNull();
+    expect(unset.lastImportPath).toBeNull();
+    expect(() => parseSettings({ ...base, exportDir: 'exports' })).toThrow(/exportDir must be absolute/);
+    expect(() => parseSettings({ ...base, lastImportPath: '../media' })).toThrow(/lastImportPath must be absolute/);
+    expect(() => parseSettings({ ...base, exportDir: 42 })).toThrow(/exportDir must be null or an absolute path/);
   });
 
   it('merges a partial patch without losing other values', () => {
     const current = defaultSettings();
-    const merged = mergeSettings(current, { frameIntervalSeconds: 5, allowRoots: ['/tmp/media'] });
+    const merged = mergeSettings(current, {
+      frameIntervalSeconds: 5,
+      exportDir: '/tmp/local-frames-exports',
+      lastImportPath: '/tmp/local-frames-media',
+    });
     expect(merged.frameIntervalSeconds).toBe(5);
     expect(merged.budgetPerTask).toBe(3000);
-    expect(merged.allowRoots).toEqual(['/tmp/media']);
+    expect(merged.exportDir).toBe('/tmp/local-frames-exports');
+    expect(merged.lastImportPath).toBe('/tmp/local-frames-media');
+    expect(merged.allowRoots).toEqual([]);
+  });
+
+  it('rejects unknown top-level fields instead of guessing', () => {
+    expect(() => parseSettings({ ...defaultSettings(), secret: 'x' })).toThrow(/unknown field/);
+  });
+
+  it('loads legacy settings rows without the path fields instead of resetting allowRoots', () => {
+    const db = openDatabase(makeTempDir());
+    try {
+      const root = makeTempDir('lf-legacy-root-');
+      const legacy = {
+        model: null,
+        dataDirLimitGb: 50,
+        budgetPerTask: 3000,
+        frameIntervalSeconds: 2,
+        allowRoots: [root],
+      };
+      db.raw
+        .prepare('INSERT INTO settings (key, value_json) VALUES (?, ?)')
+        .run('settings', JSON.stringify(legacy));
+      const settings = new SettingsStore(db).load();
+      expect(settings.allowRoots).toEqual([root]);
+      expect(settings.exportDir).toBeNull();
+      expect(settings.lastImportPath).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('saves the allowlist on the first write and shows it after reopening the store', () => {
+    const db = openDatabase(makeTempDir());
+    try {
+      const root = makeTempDir('lf-first-save-root-');
+      expect(new SettingsStore(db).load().allowRoots).toEqual([]);
+      new SettingsStore(db).update({ allowRoots: [root] });
+      expect(new SettingsStore(db).load().allowRoots).toEqual([root]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('persists the export directory across store instances', () => {
+    const db = openDatabase(makeTempDir());
+    try {
+      const exportDir = makeTempDir('lf-export-target-');
+      new SettingsStore(db).update({ exportDir });
+      expect(new SettingsStore(db).load().exportDir).toBe(exportDir);
+    } finally {
+      db.close();
+    }
   });
 
   it('persists settings in the plugin table and falls back to defaults for corrupt rows', () => {

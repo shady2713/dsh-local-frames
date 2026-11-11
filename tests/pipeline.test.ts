@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync, symlinkSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { join, sep } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import { dhashFromGray, hammingHex } from '../src/dhash.js';
 import { exportTask, splitForFamily } from '../src/export.js';
@@ -14,6 +14,12 @@ import { EnvironmentChecker } from '../src/versions.js';
 import type { VisionClient, VisionResult } from '../src/vision.js';
 import { fakeExec, healthySubprocess, makeTempDir, writeFixtureFile } from './helpers.js';
 import { hostSubprocess, runChecked } from './host-subprocess.js';
+
+// Fixtures live under the OS temp dir; keep capacity checks independent of the host's free disk.
+vi.mock('../src/disk.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/disk.js')>();
+  return { ...actual, freeDiskGb: () => 100 };
+});
 
 function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -105,6 +111,8 @@ describe('ffmpeg frames, dedup, and unchanged originals', () => {
       media,
       vision: vision.vision,
       sleep: async () => undefined,
+      // Fixtures live under the OS temp dir; the spec's free-disk pause is not under test here.
+      minFreeGb: 0,
       log: () => undefined,
     });
     const environment = new EnvironmentChecker({
@@ -221,6 +229,14 @@ describe('ffmpeg frames, dedup, and unchanged originals', () => {
         splits.set(cells[2] ?? '', cells[1] ?? '');
       }
       for (const [family, split] of families) expect(splits.get(family)).toBe(split);
+
+      const customRoot = makeTempDir('lf-export-custom-');
+      const custom = exportTask(db, dataDir, taskId, new Date(Date.now() + 2000), customRoot);
+      expect(custom.directory.startsWith(`${customRoot}${sep}`)).toBe(true);
+      expect(custom.images).toBe(exported.images);
+      expect(readdirSync(join(custom.directory, 'images')).length).toBe(custom.images);
+      expect(readFileSync(join(custom.directory, 'labels.csv'), 'utf8')).toContain('file_name,split,family_id');
+      expect(existsSync(join(dataDir, 'exports'))).toBe(true);
     } finally {
       db.close();
     }
@@ -256,7 +272,7 @@ describe('restart and failure accounting', () => {
       },
     };
     const vision = scriptedVision(() => qualified('object-a'));
-    const first = new Pipeline({ db, settings, dataDir, media, vision: vision.vision, sleep: async () => undefined });
+    const first = new Pipeline({ db, settings, dataDir, media, vision: vision.vision, sleep: async () => undefined, minFreeGb: 0 });
     const now = new Date().toISOString();
     const taskId = 'task-restart';
     db.raw
@@ -299,7 +315,7 @@ describe('restart and failure accounting', () => {
     try {
       await first.runUntilIdle();
       const afterStop = db.raw.prepare('SELECT COUNT(*) AS count FROM frames').get() as { count?: number };
-      const second = new Pipeline({ db, settings, dataDir, media, vision: vision.vision, sleep: async () => undefined });
+      const second = new Pipeline({ db, settings, dataDir, media, vision: vision.vision, sleep: async () => undefined, minFreeGb: 0 });
       db.raw.prepare("UPDATE tasks SET status = 'RUNNING' WHERE task_id = ?").run(taskId);
       const item = db.raw.prepare('SELECT state FROM items WHERE item_id = ?').get('item-1') as { state?: string };
       if (item.state === 'ERROR') {
@@ -366,7 +382,7 @@ describe('restart and failure accounting', () => {
         return { ok: true, text: 'not-json', tokens: 1, ms: 1 };
       },
     };
-    const pipeline = new Pipeline({ db, settings, dataDir, media, vision, sleep: async () => undefined });
+    const pipeline = new Pipeline({ db, settings, dataDir, media, vision, sleep: async () => undefined, minFreeGb: 0 });
     try {
       await pipeline.runUntilIdle();
       const task = db.raw.prepare('SELECT status, progress_json FROM tasks').get() as { status: string; progress_json: string };
@@ -443,7 +459,7 @@ describe('restart and failure accounting', () => {
       decodeGray: async () => ({ ok: false, error: 'unused' }),
       shrinkJpeg: async () => ({ ok: false, error: 'unused' }),
     };
-    const pipeline = new Pipeline({ db, settings, dataDir, media, vision, sleep: async () => undefined });
+    const pipeline = new Pipeline({ db, settings, dataDir, media, vision, sleep: async () => undefined, minFreeGb: 0 });
     try {
       await pipeline.runUntilIdle();
       expect(prompts).toHaveLength(2);

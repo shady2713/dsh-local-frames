@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { isAbsolute } from 'node:path';
 import type { LocalFramesDatabase } from './db.js';
 import { exportTask } from './export.js';
 import { HttpError, guard, readJsonBody, requireMethod, sendJson } from './http.js';
@@ -124,10 +125,21 @@ export function createRoutes(
       if (body.recursive !== undefined && typeof body.recursive !== 'boolean') {
         throw new HttpError(400, 'INVALID_BODY', 'recursive 必须是布尔值');
       }
+      const importPath = body.path.trim();
+      // Remember the path users actually submitted so the progress page can
+      // refill it after a reload. Relative paths are rejected by ingest.
+      if (isAbsolute(importPath)) {
+        try {
+          services.settings.update({ lastImportPath: importPath });
+        } catch (error) {
+          if (error instanceof SettingsError) throw new HttpError(400, 'INVALID_SETTINGS', error.message);
+          throw error;
+        }
+      }
       const taskId = activeTaskId(services.db);
       if (taskId === null) throw new HttpError(409, 'NO_TASK', '没有进行中或暂停的任务');
       const report = await ingestPaths(services.db, taskId, services.dataDir, services.settings.load().allowRoots, [
-        { path: body.path, recursive: body.recursive !== false },
+        { path: importPath, recursive: body.recursive !== false },
       ]);
       if (report.added.length === 0 && report.existing.length > 0 && report.rejected.length === 0) {
         throw new HttpError(409, 'EXISTS', '已存在');
@@ -157,7 +169,7 @@ export function createRoutes(
       const requested = isRecord(body) && typeof body.taskId === 'string' ? body.taskId.trim() : '';
       const taskId = requested.length > 0 ? requested : (activeTaskId(services.db) ?? latestDoneTask(services.db));
       if (taskId === null) throw new HttpError(404, 'NO_TASK', '没有可导出的任务');
-      const exported = exportTask(services.db, services.dataDir, taskId);
+      const exported = exportTask(services.db, services.dataDir, taskId, new Date(), services.settings.load().exportDir);
       sendJson(res, 200, { status: 'OK', data: { task_id: taskId, ...exported } });
       return;
     }

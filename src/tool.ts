@@ -434,7 +434,7 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
   return {
     name: 'lf_export',
     description:
-      'Export the qualified frames of a task into a new exports/<timestamp>/ directory with images/, labels.csv, sources.csv and README.txt. Omit taskId for the current or most recently finished task.',
+      'Export the qualified frames of a task into a new timestamped directory under the configured export directory (default dataDir/exports), with images/, labels.csv, sources.csv and README.txt. Omit taskId for the current or most recently finished task.',
     parameters: {
       type: 'object',
       properties: {
@@ -456,7 +456,7 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
         | undefined;
       if (typeof existing?.task_id !== 'string') return fail('任务不存在', { task_id: taskId });
       try {
-        const exported = exportTask(deps.db, deps.dataDir, taskId);
+        const exported = exportTask(deps.db, deps.dataDir, taskId, new Date(), deps.settings.load().exportDir);
         return ok(`已导出 ${exported.images} 张图片`, {
           task_id: taskId,
           directory: exported.directory,
