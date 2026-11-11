@@ -151,6 +151,20 @@ describe('path settings persistence', () => {
     }
   });
 
+  it('persists the judgment concurrency and rejects values outside 1..8', async () => {
+    const h = persistedRoutes();
+    try {
+      const saved = await postJson(h.routes, '/api/local-frames/settings', { visionConcurrency: 5 });
+      expect(saved.status).toBe(200);
+      expect(new SettingsStore(h.db).load().visionConcurrency).toBe(5);
+      const invalid = await postJson(h.routes, '/api/local-frames/settings', { visionConcurrency: 9 });
+      expect(invalid.status).toBe(400);
+      expect(new SettingsStore(h.db).load().visionConcurrency).toBe(5);
+    } finally {
+      h.db.close();
+    }
+  });
+
   it('rejects relative paths with a clear reason and persists the export directory', async () => {
     const h = persistedRoutes();
     try {

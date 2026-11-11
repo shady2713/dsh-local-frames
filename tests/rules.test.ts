@@ -211,11 +211,13 @@ describe('judge retries', () => {
   it('retries timed-out calls and makes at most five attempts for one frame', async () => {
     let calls = 0;
     const waits: number[] = [];
+    const signals: Array<AbortSignal | undefined> = [];
     const vision: VisionClient = {
       available: () => true,
       listImageModels: async () => [],
-      judge: async () => {
+      judge: async (input) => {
         calls += 1;
+        signals.push(input.signal);
         if (calls < 5) return new Promise<VisionResult>(() => undefined);
         return {
           ok: true,
@@ -245,6 +247,10 @@ describe('judge retries', () => {
     expect(result.ok).toBe(true);
     expect(calls).toBe(5);
     expect(waits).toEqual([1000, 5000, 10_000, 30_000]);
+    // Every timed-out attempt is aborted through its own AbortSignal.
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[3]?.aborted).toBe(true);
+    expect(signals[4]?.aborted).toBe(false);
   });
 
   it('stops after five timed-out attempts instead of retrying forever', async () => {
