@@ -98,6 +98,35 @@ export interface EnvironmentReport {
 }
 
 /** One imported video in task order; `position` starts at 1 and is the processing order. */
+export interface FunnelStats {
+  imported: number;
+  probed: number;
+  frames: number;
+  duplicatesSkipped: number;
+  skipped: number;
+  judged: number;
+  exportable: number;
+  errors: number;
+}
+
+/** One object selected for a task, as shown in the task list and export selection. */
+export interface TaskTargetRef {
+  target_id: string;
+  name: string;
+}
+
+/** One row of `GET /api/local-frames/tasks`; read-only task history. */
+export interface TaskSummary {
+  task_id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  funnel: FunnelStats;
+  /** Frames in the FAILED state that can be retried individually. */
+  failedFrames: number;
+  targets: TaskTargetRef[];
+}
+
 export interface StatusItem {
   position: number;
   item_id: string;
@@ -126,16 +155,7 @@ export interface StatusSnapshot {
     /** Objects selected when the task was created; the export page lists these. */
     target_ids: string[];
   } | null;
-  funnel: {
-    imported: number;
-    probed: number;
-    frames: number;
-    duplicatesSkipped: number;
-    skipped: number;
-    judged: number;
-    exportable: number;
-    errors: number;
-  };
+  funnel: FunnelStats;
   items: StatusItem[];
   errors: Array<{ item_id: string; local_path: string; error_code: string | null }>;
   pause: { code: string | null; reason: string | null } | null;

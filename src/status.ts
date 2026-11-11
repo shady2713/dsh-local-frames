@@ -3,7 +3,7 @@ import type { LocalFramesDatabase } from './db.js';
 import type { SettingsStore } from './settings.js';
 import type { EnvironmentChecker } from './versions.js';
 import { readProgress, readSpec } from './progress.js';
-import type { StatusSnapshot, TaskRow, TargetAliases } from './types.js';
+import type { FunnelStats, StatusSnapshot, TaskRow, TaskSummary, TaskTargetRef, TargetAliases } from './types.js';
 
 function parseJsonObject(text: string): Record<string, unknown> {
   try {
@@ -43,7 +43,8 @@ function latestTask(db: LocalFramesDatabase): TaskRow | null {
   return row ?? null;
 }
 
-function funnelFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapshot['funnel'] {
+/** The file funnel of one task; shared by the status snapshot and the task list. */
+export function funnelFor(db: LocalFramesDatabase, taskId: string | null): FunnelStats {
   if (taskId === null) {
     return {
       imported: 0,
@@ -193,4 +194,42 @@ export async function buildStatus(options: {
     },
     environment: environmentReport,
   };
+}
+
+/** Objects recorded in a task spec, resolved to current names for the task list. */
+function targetRefsFor(db: LocalFramesDatabase, targetIds: readonly string[]): TaskTargetRef[] {
+  if (targetIds.length === 0) return [];
+  const rows = db.raw
+    .prepare(
+      `SELECT target_id, name FROM targets WHERE target_id IN (${targetIds.map(() => '?').join(',')})`,
+    )
+    .all(...targetIds) as Array<{ target_id: string; name: string }>;
+  const byId = new Map(rows.map((row) => [row.target_id, row.name]));
+  return targetIds.map((id) => ({ target_id: id, name: byId.get(id) ?? id }));
+}
+
+/**
+ * Read-only task history for `GET /api/local-frames/tasks`: every task, newest
+ * first, with its funnel, failed-frame count and selected objects. The page uses
+ * this list to export a completed task directly by task id.
+ */
+export function listTaskSummaries(db: LocalFramesDatabase): TaskSummary[] {
+  const rows = db.raw
+    .prepare(
+      'SELECT task_id, spec_json, progress_json, status, created_at, updated_at FROM tasks ORDER BY created_at DESC, rowid DESC',
+    )
+    .all() as unknown as TaskRow[];
+  return rows.map((row) => ({
+    task_id: row.task_id,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    funnel: funnelFor(db, row.task_id),
+    failedFrames: scalar(
+      db,
+      "SELECT COUNT(*) AS count FROM frames WHERE state = 'FAILED' AND item_id IN (SELECT item_id FROM items WHERE task_id = ?)",
+      row.task_id,
+    ),
+    targets: targetRefsFor(db, readSpec(row.spec_json).targetIds),
+  }));
 }

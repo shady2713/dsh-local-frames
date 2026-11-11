@@ -9,6 +9,7 @@ import { nowIso } from './ids.js';
 import { controlTask } from './pipeline.js';
 import type { Pipeline } from './pipeline.js';
 import { SettingsError, type SettingsStore } from './settings.js';
+import { listTaskSummaries } from './status.js';
 import type { EnvironmentReport, StatusSnapshot } from './types.js';
 
 export interface RoutesDeps {
@@ -85,6 +86,12 @@ export function createRoutes(
       requireMethod(req, ['GET']);
       const models = deps.listModels === undefined ? [] : await deps.listModels();
       sendJson(res, 200, { status: 'OK', data: { models } });
+      return;
+    }
+    if (pathname === '/api/local-frames/tasks') {
+      requireMethod(req, ['GET']);
+      const services = ready(deps);
+      sendJson(res, 200, { status: 'OK', data: { tasks: listTaskSummaries(services.db) } });
       return;
     }
     if (pathname === '/api/local-frames/environment/recheck') {

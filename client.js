@@ -75,6 +75,21 @@ window.__ModuleLoader__.load({
       return { status, error, setError, reload };
     }
 
+    function useTasks() {
+      const [tasks, setTasks] = React.useState([]);
+      const reload = React.useCallback(() => {
+        request('/api/local-frames/tasks')
+          .then((payload) => setTasks(Array.isArray(payload.data?.tasks) ? payload.data.tasks : []))
+          .catch(() => undefined);
+      }, []);
+      React.useEffect(() => {
+        reload();
+        const timer = setInterval(reload, 3000);
+        return () => clearInterval(timer);
+      }, [reload]);
+      return { tasks, reload };
+    }
+
     function isAbsolutePath(value) {
       return value.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(value);
     }
@@ -98,6 +113,7 @@ window.__ModuleLoader__.load({
 
     function LocalFramesPage() {
       const { status, error, setError, reload } = useStatus();
+      const { tasks } = useTasks();
       const [models, setModels] = React.useState([]);
       const [limit, setLimit] = React.useState('50');
       const [budget, setBudget] = React.useState('3000');
@@ -110,6 +126,7 @@ window.__ModuleLoader__.load({
       const [recursive, setRecursive] = React.useState(true);
       const [force, setForce] = React.useState(false);
       const [selectedTargets, setSelectedTargets] = React.useState([]);
+      const [exportTaskId, setExportTaskId] = React.useState(null);
       const [exportZip, setExportZip] = React.useState(false);
       const [exportByObject, setExportByObject] = React.useState(false);
       const [exporting, setExporting] = React.useState(false);
@@ -142,13 +159,24 @@ window.__ModuleLoader__.load({
       const task = status?.task;
       const funnel = status?.funnel;
       const taskTargetIds = Array.isArray(task?.target_ids) ? task.target_ids : [];
-      const taskTargets = (status?.targets ?? []).filter(
-        (target) => !target.archived && (taskTargetIds.length === 0 || taskTargetIds.includes(target.target_id)),
-      );
+      const currentTaskTargets = (status?.targets ?? [])
+        .filter((target) => !target.archived && (taskTargetIds.length === 0 || taskTargetIds.includes(target.target_id)))
+        .map((target) => ({ target_id: target.target_id, name: target.name }));
+      const selectedExportTask = tasks.find((entry) => entry.task_id === exportTaskId) ?? null;
+      const exportTargets = selectedExportTask === null ? currentTaskTargets : selectedExportTask.targets ?? [];
       const recentExports = status?.settings?.recentExports ?? [];
       React.useEffect(() => {
+        setExportTaskId((current) => {
+          if (current !== null && tasks.some((entry) => entry.task_id === current)) return current;
+          const active = tasks.find((entry) => entry.task_id === status?.task?.task_id);
+          if (active !== undefined) return active.task_id;
+          const done = tasks.find((entry) => entry.status === 'DONE');
+          return done === undefined ? (tasks[0]?.task_id ?? null) : done.task_id;
+        });
+      }, [tasks, status?.task?.task_id]);
+      React.useEffect(() => {
         setSelectedTargets([]);
-      }, [task?.task_id]);
+      }, [exportTaskId]);
       const toggleTarget = (targetId) => {
         setSelectedTargets((current) =>
           current.includes(targetId) ? current.filter((id) => id !== targetId) : [...current, targetId],
@@ -192,14 +220,14 @@ window.__ModuleLoader__.load({
           { clearRoot: nextRoot.length > 0 },
         );
       };
-      const runExport = () => {
+      const performExport = (taskId, targetIds) => {
         if (exporting) return;
         setExporting(true);
         setMessage('');
         setError('');
         const body = { zip: exportZip, byObject: exportByObject };
-        if (task !== null && task !== undefined) body.taskId = task.task_id;
-        if (selectedTargets.length > 0) body.targetIds = selectedTargets;
+        if (typeof taskId === 'string' && taskId.length > 0) body.taskId = taskId;
+        if (Array.isArray(targetIds) && targetIds.length > 0) body.targetIds = targetIds;
         request('/api/local-frames/export', body)
           .then((payload) => {
             const data = payload.data ?? {};
@@ -214,6 +242,13 @@ window.__ModuleLoader__.load({
             setToast({ kind: 'error', text: `导出失败：${reason instanceof Error ? reason.message : String(reason)}`, path: '' });
           })
           .finally(() => setExporting(false));
+      };
+      const runExport = () => {
+        performExport(selectedExportTask?.task_id ?? task?.task_id ?? null, selectedTargets);
+      };
+      const exportFromList = (taskId) => {
+        setExportTaskId(taskId);
+        performExport(taskId, []);
       };
       const openExport = (directory) => {
         request('/api/local-frames/export/open', { path: directory })
@@ -607,17 +642,92 @@ window.__ModuleLoader__.load({
         h(
           'section',
           { className: 'lf-section' },
+          h('h3', { className: 'lf-section-title' }, '任务列表'),
+          h(
+            'div',
+            { className: 'lf-card' },
+            tasks.length === 0
+              ? Paragraph('还没有任务')
+              : h(
+                  'table',
+                  { className: 'lf-table' },
+                  h(
+                    'thead',
+                    null,
+                    h('tr', null, ['任务', '状态', '创建', '更新', '漏斗', '失败数', '操作'].map((label) => h('th', { key: label }, label))),
+                  ),
+                  h(
+                    'tbody',
+                    null,
+                    tasks.map((entry) => {
+                      const stats = entry.funnel ?? {};
+                      const failures = (stats.errors ?? 0) + (entry.failedFrames ?? 0);
+                      return h(
+                        'tr',
+                        { key: entry.task_id },
+                        h('td', { className: 'lf-toast-path' }, entry.task_id),
+                        h('td', null, entry.status),
+                        h('td', null, formatTime(entry.created_at)),
+                        h('td', null, formatTime(entry.updated_at)),
+                        h(
+                          'td',
+                          null,
+                          `导入 ${stats.imported ?? 0} · 抽帧 ${stats.frames ?? 0} · 打标 ${stats.judged ?? 0} · 可导出 ${stats.exportable ?? 0}`,
+                        ),
+                        h('td', { className: failures > 0 ? 'lf-bad' : undefined }, String(failures)),
+                        h(
+                          'td',
+                          null,
+                          entry.status === 'DONE'
+                            ? h(
+                                'button',
+                                {
+                                  className: 'lf-button',
+                                  type: 'button',
+                                  disabled: exporting,
+                                  onClick: () => exportFromList(entry.task_id),
+                                },
+                                exporting ? '导出中…' : '导出',
+                              )
+                            : null,
+                        ),
+                      );
+                    }),
+                  ),
+                ),
+            Paragraph('导出任务列表中的已完成任务只复用已有帧与标签，不重新抽帧、不调用模型。'),
+          ),
+        ),
+        h(
+          'section',
+          { className: 'lf-section' },
           h('h3', { className: 'lf-section-title' }, '导出'),
           h(
             'div',
             { className: 'lf-card' },
             Paragraph('只复用已完成任务的帧与标签，不重新抽帧、不调用模型；不勾选对象时导出任务全部对象。'),
-            taskTargets.length === 0
-              ? Paragraph('当前任务没有可导出的对象。')
+            h(
+              'label',
+              { className: 'lf-field' },
+              '导出任务',
+              h(
+                'select',
+                {
+                  value: exportTaskId ?? '',
+                  onChange: (event) => setExportTaskId(event.target.value === '' ? null : event.target.value),
+                },
+                h('option', { value: '' }, task === null || task === undefined ? '当前任务（无）' : `当前任务（${task.task_id}）`),
+                tasks
+                  .filter((entry) => entry.task_id !== task?.task_id)
+                  .map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${entry.status}`)),
+              ),
+            ),
+            exportTargets.length === 0
+              ? Paragraph('所选任务没有可导出的对象。')
               : h(
                   'div',
                   { className: 'lf-checks' },
-                  taskTargets.map((target) =>
+                  exportTargets.map((target) =>
                     h(
                       'label',
                       { key: target.target_id, className: 'lf-check' },
@@ -651,7 +761,7 @@ window.__ModuleLoader__.load({
               ),
               h('button', { className: 'lf-button', type: 'button', disabled: exporting, onClick: runExport }, exporting ? '导出中…' : '导出'),
             ),
-            Paragraph('每次导出都新建目录或 zip，不会覆盖之前的导出；写入设置页配置的导出目录。'),
+            Paragraph('每次导出都新建目录或 zip，不会覆盖之前的导出；写入页面设置区配置的导出目录。'),
           ),
           h(
             'div',
