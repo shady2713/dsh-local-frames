@@ -17,6 +17,7 @@ window.__ModuleLoader__.load({
 .lf-field { display:flex; flex-direction:column; gap:4px; font-size:13px; }
 .lf-field input, .lf-field select { border:1px solid var(--dsw-alias-border-l1,#e5e6eb); border-radius:8px; padding:6px 8px; font:inherit; background:transparent; color:inherit; min-width:180px; }
 .lf-button { border:1px solid var(--dsw-alias-border-l1,#e5e6eb); background:var(--dsw-alias-bg-layer-1,#fff); color:inherit; border-radius:8px; padding:6px 10px; cursor:pointer; font:inherit; }
+.lf-button:disabled { cursor:default; opacity:0.6; }
 .lf-error { color:#c2410c; font-size:13px; margin:0; }
 .lf-table { width:100%; border-collapse:collapse; font-size:13px; }
 .lf-table th, .lf-table td { text-align:left; border-bottom:1px solid var(--dsw-alias-border-l1,#e5e6eb); padding:6px 4px; vertical-align:top; }
@@ -30,6 +31,8 @@ window.__ModuleLoader__.load({
 .lf-checks { display:flex; flex-wrap:wrap; gap:10px 16px; }
 .lf-check { display:flex; align-items:center; gap:6px; font-size:13px; }
 .lf-check input { margin:0; }
+.lf-section { display:flex; flex-direction:column; gap:10px; }
+.lf-section-title { margin:0; font-size:15px; font-weight:600; }
 `;
 
     function Paragraph(text, extraClass) {
@@ -65,6 +68,10 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         reload();
       }, [reload]);
+      React.useEffect(() => {
+        const timer = setInterval(reload, 3000);
+        return () => clearInterval(timer);
+      }, [reload]);
       return { status, error, setError, reload };
     }
 
@@ -75,236 +82,6 @@ window.__ModuleLoader__.load({
     function formatTime(value) {
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
-    }
-
-    function SettingsPage() {
-      const { status, error, setError, reload } = useStatus();
-      const [models, setModels] = React.useState([]);
-      const [limit, setLimit] = React.useState('50');
-      const [budget, setBudget] = React.useState('3000');
-      const [interval, setIntervalSeconds] = React.useState('2');
-      const [concurrency, setConcurrency] = React.useState('2');
-      const [exportDir, setExportDir] = React.useState('');
-      const [root, setRoot] = React.useState('');
-      const [message, setMessage] = React.useState('');
-      React.useEffect(() => {
-        request('/api/local-frames/models')
-          .then((payload) => setModels(payload.data.models ?? []))
-          .catch(() => setModels([]));
-      }, []);
-      React.useEffect(() => {
-        if (status === null) return;
-        setLimit(String(status.settings.dataDirLimitGb));
-        setBudget(String(status.settings.budgetPerTask));
-        setIntervalSeconds(String(status.settings.frameIntervalSeconds));
-        setConcurrency(String(status.settings.visionConcurrency));
-        setExportDir(status.settings.exportDir ?? '');
-      }, [status]);
-      const save = (patch, options) => {
-        setMessage('');
-        setError('');
-        request('/api/local-frames/settings', patch)
-          .then(() => {
-            setMessage('已保存');
-            if (options && options.clearRoot) setRoot('');
-            reload();
-          })
-          .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-      };
-      const settings = status?.settings;
-      const defaultExportDir = status?.dataDir?.path ? `${status.dataDir.path}/exports` : '数据目录/exports';
-      const modelValue = settings?.model === null || settings?.model === undefined
-        ? ''
-        : `${settings.model.provider}\n${settings.model.model}`;
-      return h(
-        'div',
-        { className: 'lf-root' },
-        h('h2', { className: 'lf-title' }, '本地视频帧 · 设置'),
-        error ? h('p', { className: 'lf-error' }, error) : null,
-        message ? h('p', { className: 'lf-ok' }, message) : null,
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '模型'),
-          h(
-            'label',
-            { className: 'lf-field' },
-            '视觉模型',
-            h(
-              'select',
-              {
-                value: modelValue,
-                onChange: (event) => {
-                  const value = event.target.value;
-                  if (value === '') {
-                    save({ model: null });
-                    return;
-                  }
-                  const [provider, model] = value.split('\n');
-                  save({ model: { provider, model } });
-                },
-              },
-              h('option', { value: '' }, '未选择'),
-              models.map((model) =>
-                h(
-                  'option',
-                  { key: `${model.provider}/${model.model}`, value: `${model.provider}\n${model.model}` },
-                  `${model.provider} / ${model.name || model.model}`,
-                ),
-              ),
-            ),
-          ),
-          h('p', { className: 'lf-hint' }, '只使用一个模型。密钥留在 DSH 模型页，不会写入本插件。'),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '数据与抽帧'),
-          Paragraph(`数据目录（只读）：${status?.dataDir?.path ?? '读取中'}`),
-          h(
-            'label',
-            { className: 'lf-field' },
-            '导出目录（绝对路径）',
-            h('input', {
-              value: exportDir,
-              placeholder: '留空使用默认目录',
-              onChange: (event) => setExportDir(event.target.value),
-            }),
-          ),
-          h('p', { className: 'lf-hint' }, `留空时导出到默认目录：${defaultExportDir}`),
-          h(
-            'div',
-            { className: 'lf-row' },
-            h('label', { className: 'lf-field' }, '磁盘上限 GB', h('input', { value: limit, onChange: (event) => setLimit(event.target.value) })),
-            h('label', { className: 'lf-field' }, '每任务预算', h('input', { value: budget, onChange: (event) => setBudget(event.target.value) })),
-            h('label', { className: 'lf-field' }, '抽帧间隔（秒）', h('input', { value: interval, onChange: (event) => setIntervalSeconds(event.target.value) })),
-            h('label', { className: 'lf-field' }, '判定并发（1–8）', h('input', { value: concurrency, onChange: (event) => setConcurrency(event.target.value) })),
-            h(
-              'button',
-              {
-                className: 'lf-button',
-                type: 'button',
-                onClick: () => {
-                  if (settings === null || settings === undefined) {
-                    setError('设置尚未载入，请稍候再试');
-                    return;
-                  }
-                  const nextRoot = root.trim();
-                  const dir = exportDir.trim();
-                  if (nextRoot.length > 0 && !isAbsolutePath(nextRoot)) {
-                    setError(`白名单根目录必须是绝对路径：${nextRoot}`);
-                    return;
-                  }
-                  if (dir.length > 0 && !isAbsolutePath(dir)) {
-                    setError(`导出目录必须是绝对路径：${dir}`);
-                    return;
-                  }
-                  save(
-                    {
-                      dataDirLimitGb: Number(limit),
-                      budgetPerTask: Number(budget),
-                      frameIntervalSeconds: Number(interval),
-                      visionConcurrency: Number(concurrency),
-                      exportDir: dir.length > 0 ? dir : null,
-                      allowRoots: nextRoot.length > 0 ? [...settings.allowRoots, nextRoot] : settings.allowRoots,
-                    },
-                    { clearRoot: nextRoot.length > 0 },
-                  );
-                },
-              },
-              '保存',
-            ),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '允许读取的视频根目录'),
-          Paragraph('白名单为空时拒绝一切导入。'),
-          h(
-            'ul',
-            null,
-            (settings?.allowRoots ?? []).map((entry) =>
-              h(
-                'li',
-                { key: entry },
-                entry,
-                ' ',
-                h(
-                  'button',
-                  {
-                    className: 'lf-button',
-                    type: 'button',
-                    onClick: () => save({ allowRoots: settings.allowRoots.filter((item) => item !== entry) }),
-                  },
-                  '删除',
-                ),
-              ),
-            ),
-          ),
-          h(
-            'div',
-            { className: 'lf-row' },
-            h('input', { value: root, placeholder: '绝对路径', onChange: (event) => setRoot(event.target.value) }),
-            h(
-              'button',
-              {
-                className: 'lf-button',
-                type: 'button',
-                onClick: () => {
-                  const next = root.trim();
-                  if (next.length === 0) {
-                    setError('请输入白名单根目录（绝对路径）');
-                    return;
-                  }
-                  if (!isAbsolutePath(next)) {
-                    setError(`白名单根目录必须是绝对路径：${next}`);
-                    return;
-                  }
-                  if (settings === null || settings === undefined) {
-                    setError('设置尚未载入，请稍候再试');
-                    return;
-                  }
-                  save({ allowRoots: [...settings.allowRoots, next] }, { clearRoot: true });
-                },
-              },
-              '添加',
-            ),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '环境'),
-          h(
-            'table',
-            { className: 'lf-table' },
-            h('tbody', null, (status?.environment?.checks ?? []).map((check) =>
-              h(
-                'tr',
-                { key: check.id },
-                h('td', null, check.label),
-                h('td', { className: check.status === 'OK' ? 'lf-ok' : 'lf-bad' }, check.status),
-                h('td', null, check.version || check.detail || ''),
-                h('td', null, check.install || ''),
-              ),
-            )),
-          ),
-          h(
-            'button',
-            {
-              className: 'lf-button',
-              type: 'button',
-              onClick: () => {
-                request('/api/local-frames/environment/recheck', {})
-                  .then(() => reload())
-                  .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-              },
-            },
-            '重新检查',
-          ),
-        ),
-      );
     }
 
     function stateLabel(item) {
@@ -319,12 +96,19 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function ProgressPage() {
+    function LocalFramesPage() {
       const { status, error, setError, reload } = useStatus();
+      const [models, setModels] = React.useState([]);
+      const [limit, setLimit] = React.useState('50');
+      const [budget, setBudget] = React.useState('3000');
+      const [interval, setIntervalSeconds] = React.useState('2');
+      const [concurrency, setConcurrency] = React.useState('2');
+      const [exportDir, setExportDir] = React.useState('');
+      const [root, setRoot] = React.useState('');
+      const [message, setMessage] = React.useState('');
       const [path, setPath] = React.useState('');
       const [recursive, setRecursive] = React.useState(true);
       const [force, setForce] = React.useState(false);
-      const [message, setMessage] = React.useState('');
       const [selectedTargets, setSelectedTargets] = React.useState([]);
       const [exportZip, setExportZip] = React.useState(false);
       const [exportByObject, setExportByObject] = React.useState(false);
@@ -332,15 +116,29 @@ window.__ModuleLoader__.load({
       const [toast, setToast] = React.useState(null);
       const lastPathFilled = React.useRef(false);
       React.useEffect(() => {
+        request('/api/local-frames/models')
+          .then((payload) => setModels(payload.data.models ?? []))
+          .catch(() => setModels([]));
+      }, []);
+      React.useEffect(() => {
+        if (status === null) return;
+        setLimit(String(status.settings.dataDirLimitGb));
+        setBudget(String(status.settings.budgetPerTask));
+        setIntervalSeconds(String(status.settings.frameIntervalSeconds));
+        setConcurrency(String(status.settings.visionConcurrency));
+        setExportDir(status.settings.exportDir ?? '');
+      }, [status]);
+      React.useEffect(() => {
         if (lastPathFilled.current || status === null) return;
         lastPathFilled.current = true;
         const lastImportPath = status.settings?.lastImportPath;
         if (typeof lastImportPath === 'string' && lastImportPath.length > 0) setPath(lastImportPath);
       }, [status]);
-      React.useEffect(() => {
-        const timer = setInterval(reload, 3000);
-        return () => clearInterval(timer);
-      }, [reload]);
+      const settings = status?.settings;
+      const defaultExportDir = status?.dataDir?.path ? `${status.dataDir.path}/exports` : '数据目录/exports';
+      const modelValue = settings?.model === null || settings?.model === undefined
+        ? ''
+        : `${settings.model.provider}\n${settings.model.model}`;
       const task = status?.task;
       const funnel = status?.funnel;
       const taskTargetIds = Array.isArray(task?.target_ids) ? task.target_ids : [];
@@ -354,6 +152,44 @@ window.__ModuleLoader__.load({
       const toggleTarget = (targetId) => {
         setSelectedTargets((current) =>
           current.includes(targetId) ? current.filter((id) => id !== targetId) : [...current, targetId],
+        );
+      };
+      const save = (patch, options) => {
+        setMessage('');
+        setError('');
+        request('/api/local-frames/settings', patch)
+          .then(() => {
+            setMessage('已保存');
+            if (options && options.clearRoot) setRoot('');
+            reload();
+          })
+          .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      };
+      const saveSettings = () => {
+        if (settings === null || settings === undefined) {
+          setError('设置尚未载入，请稍候再试');
+          return;
+        }
+        const nextRoot = root.trim();
+        const dir = exportDir.trim();
+        if (nextRoot.length > 0 && !isAbsolutePath(nextRoot)) {
+          setError(`白名单根目录必须是绝对路径：${nextRoot}`);
+          return;
+        }
+        if (dir.length > 0 && !isAbsolutePath(dir)) {
+          setError(`导出目录必须是绝对路径：${dir}`);
+          return;
+        }
+        save(
+          {
+            dataDirLimitGb: Number(limit),
+            budgetPerTask: Number(budget),
+            frameIntervalSeconds: Number(interval),
+            visionConcurrency: Number(concurrency),
+            exportDir: dir.length > 0 ? dir : null,
+            allowRoots: nextRoot.length > 0 ? [...settings.allowRoots, nextRoot] : settings.allowRoots,
+          },
+          { clearRoot: nextRoot.length > 0 },
         );
       };
       const runExport = () => {
@@ -420,7 +256,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'lf-root' },
-        h('h2', { className: 'lf-title' }, '本地视频帧 · 进度'),
+        h('h2', { className: 'lf-title' }, '本地视频帧'),
         Paragraph('关窗口不会停止采集，要停请点暂停。', 'lf-note'),
         error ? h('p', { className: 'lf-error' }, error) : null,
         message ? h('p', { className: 'lf-ok' }, message) : null,
@@ -444,206 +280,164 @@ window.__ModuleLoader__.load({
             )
           : null,
         h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '对象'),
-          (status?.targets ?? []).length === 0
-            ? Paragraph('还没有对象。请让 agent 调用 lf_target_add。')
-            : h(
-                'ul',
-                null,
-                status.targets.map((target) =>
-                  h(
-                    'li',
-                    { key: target.target_id },
-                    `${target.name}${target.archived ? '（已归档）' : ''}：${target.definition}`,
-                    target.archived
-                      ? null
-                      : h(
-                          'button',
-                          {
-                            className: 'lf-button',
-                            type: 'button',
-                            onClick: () => {
-                              request('/api/local-frames/targets/archive', { targetId: target.target_id })
-                                .then(() => reload())
-                                .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-                            },
-                          },
-                          '归档',
-                        ),
-                  ),
-                ),
-              ),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '任务'),
-          Paragraph(task === null || task === undefined ? '当前没有任务' : `${task.task_id} · ${task.status}`),
-          status?.pause?.reason ? Paragraph(`暂停原因：${status.pause.reason}`) : null,
-          funnel
-            ? h(
-                'table',
-                { className: 'lf-table' },
-                h(
-                  'tbody',
-                  null,
-                  [
-                    ['导入', funnel.imported],
-                    ['探测成功', funnel.probed],
-                    ['抽帧', funnel.frames],
-                    ['重复跳过', funnel.duplicatesSkipped],
-                    ['已跳过（先前已处理）', funnel.skipped],
-                    ['已打标', funnel.judged],
-                    ['可导出', funnel.exportable],
-                    ['ERROR 文件', funnel.errors],
-                  ].map(([label, value]) => h('tr', { key: label }, h('td', null, label), h('td', null, String(value)))),
-                ),
-              )
-            : null,
+          'section',
+          { className: 'lf-section' },
+          h('h3', { className: 'lf-section-title' }, '环境 / 设置'),
           h(
             'div',
-            { className: 'lf-row' },
-            h('button', { className: 'lf-button', type: 'button', onClick: () => act('pause') }, '暂停'),
-            h('button', { className: 'lf-button', type: 'button', onClick: () => act('resume') }, '继续'),
-            h('button', { className: 'lf-button', type: 'button', onClick: () => act('cancel') }, '取消'),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '导出'),
-          Paragraph('只复用已完成任务的帧与标签，不重新抽帧、不调用模型；不勾选对象时导出任务全部对象。'),
-          taskTargets.length === 0
-            ? Paragraph('当前任务没有可导出的对象。')
-            : h(
-                'div',
-                { className: 'lf-checks' },
-                taskTargets.map((target) =>
-                  h(
-                    'label',
-                    { key: target.target_id, className: 'lf-check' },
-                    h('input', {
-                      type: 'checkbox',
-                      checked: selectedTargets.includes(target.target_id),
-                      onChange: () => toggleTarget(target.target_id),
-                    }),
-                    target.name,
-                  ),
-                ),
-              ),
-          h(
-            'div',
-            { className: 'lf-row' },
+            { className: 'lf-card' },
+            h('h3', null, '模型'),
             h(
               'label',
-              { className: 'lf-check' },
-              h('input', { type: 'checkbox', checked: exportZip, onChange: (event) => setExportZip(event.target.checked) }),
-              '导出为 zip',
+              { className: 'lf-field' },
+              '视觉模型',
+              h(
+                'select',
+                {
+                  value: modelValue,
+                  onChange: (event) => {
+                    const value = event.target.value;
+                    if (value === '') {
+                      save({ model: null });
+                      return;
+                    }
+                    const [provider, model] = value.split('\n');
+                    save({ model: { provider, model } });
+                  },
+                },
+                h('option', { value: '' }, '未选择'),
+                models.map((model) =>
+                  h(
+                    'option',
+                    { key: `${model.provider}/${model.model}`, value: `${model.provider}\n${model.model}` },
+                    `${model.provider} / ${model.name || model.model}`,
+                  ),
+                ),
+              ),
             ),
+            h('p', { className: 'lf-hint' }, '只使用一个模型。密钥留在 DSH 模型页，不会写入本插件。'),
+          ),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, '数据与抽帧'),
+            Paragraph(`数据目录（只读）：${status?.dataDir?.path ?? '读取中'}`),
             h(
               'label',
-              { className: 'lf-check' },
+              { className: 'lf-field' },
+              '导出目录（绝对路径）',
               h('input', {
-                type: 'checkbox',
-                checked: exportByObject,
-                onChange: (event) => setExportByObject(event.target.checked),
+                value: exportDir,
+                placeholder: '留空使用默认目录',
+                onChange: (event) => setExportDir(event.target.value),
               }),
-              '按对象分目录（images/<对象>/）',
             ),
-            h('button', { className: 'lf-button', type: 'button', disabled: exporting, onClick: runExport }, exporting ? '导出中…' : '导出'),
+            h('p', { className: 'lf-hint' }, `留空时导出到默认目录：${defaultExportDir}`),
+            h(
+              'div',
+              { className: 'lf-row' },
+              h('label', { className: 'lf-field' }, '磁盘上限 GB', h('input', { value: limit, onChange: (event) => setLimit(event.target.value) })),
+              h('label', { className: 'lf-field' }, '每任务预算', h('input', { value: budget, onChange: (event) => setBudget(event.target.value) })),
+              h(
+                'label',
+                { className: 'lf-field' },
+                '抽帧间隔（秒，1–3600，默认 2）',
+                h('input', {
+                  type: 'number',
+                  min: 1,
+                  max: 3600,
+                  value: interval,
+                  onChange: (event) => setIntervalSeconds(event.target.value),
+                }),
+              ),
+              h(
+                'label',
+                { className: 'lf-field' },
+                '判定并发（1–8）',
+                h('input', {
+                  type: 'number',
+                  min: 1,
+                  max: 8,
+                  value: concurrency,
+                  onChange: (event) => setConcurrency(event.target.value),
+                }),
+              ),
+              h('button', { className: 'lf-button', type: 'button', onClick: saveSettings }, '保存'),
+            ),
           ),
-          Paragraph('每次导出都新建目录或 zip，不会覆盖之前的导出；写入设置页配置的导出目录。'),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '最近导出'),
-          recentExports.length === 0
-            ? Paragraph('还没有导出记录')
-            : h(
-                'table',
-                { className: 'lf-table' },
-                h('thead', null, h('tr', null, ['时间', '对象', '数量', '路径'].map((label) => h('th', { key: label }, label)))),
-                h(
-                  'tbody',
-                  null,
-                  recentExports.map((record) =>
-                    h(
-                      'tr',
-                      { key: record.directory },
-                      h('td', null, formatTime(record.exported_at)),
-                      h('td', null, (record.target_names ?? []).join('、') || '全部对象'),
-                      h('td', null, `${record.images ?? 0}${record.zip ? '（zip）' : ''}`),
-                      h('td', { className: 'lf-toast-path' }, record.directory),
-                    ),
-                  ),
-                ),
-              ),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '处理顺序'),
-          (status?.items ?? []).length === 0
-            ? Paragraph('还没有视频')
-            : h(
-                'ol',
-                null,
-                status.items.map((item) =>
-                  h(
-                    'li',
-                    { key: item.item_id, className: item.state === 'ERROR' ? 'lf-bad' : item.skipped ? 'lf-muted' : undefined },
-                    `#${item.position} ${item.title || item.local_path} · ${stateLabel(item)}`,
-                  ),
-                ),
-              ),
-          Paragraph('按导入顺序处理；目录内按路径字典序。'),
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, 'ERROR 文件'),
-          (status?.errors ?? []).length === 0
-            ? Paragraph('没有错误文件')
-            : h(
-                'ul',
-                null,
-                status.errors.map((item) => h('li', { key: item.item_id }, `${item.local_path} · ${item.error_code || ''}`)),
-              ),
-          Array.isArray(task?.progress?.csvErrors) && task.progress.csvErrors.length > 0
-            ? h(
-                'div',
-                null,
-                h('h3', null, 'CSV 解析失败'),
-                h(
-                  'ul',
-                  null,
-                  task.progress.csvErrors.map((item) => h('li', { key: `${item.path}:${item.message}` }, `${item.path} · ${item.message}`)),
-                ),
-              )
-            : null,
-        ),
-        h(
-          'div',
-          { className: 'lf-card' },
-          h('h3', null, '添加视频或目录'),
           h(
             'div',
-            { className: 'lf-row' },
-            h('input', { value: path, placeholder: '绝对路径', onChange: (event) => setPath(event.target.value) }),
+            { className: 'lf-card' },
+            h('h3', null, '允许读取的视频根目录'),
+            Paragraph('白名单为空时拒绝一切导入。'),
             h(
-              'label',
-              { className: 'lf-field' },
-              h('span', null, '递归'),
-              h('input', { type: 'checkbox', checked: recursive, onChange: (event) => setRecursive(event.target.checked) }),
+              'ul',
+              null,
+              (settings?.allowRoots ?? []).map((entry) =>
+                h(
+                  'li',
+                  { key: entry },
+                  entry,
+                  ' ',
+                  h(
+                    'button',
+                    {
+                      className: 'lf-button',
+                      type: 'button',
+                      onClick: () => save({ allowRoots: settings.allowRoots.filter((item) => item !== entry) }),
+                    },
+                    '删除',
+                  ),
+                ),
+              ),
             ),
             h(
-              'label',
-              { className: 'lf-field' },
-              h('span', null, '强制重跑（忽略先前已处理跳过）'),
-              h('input', { type: 'checkbox', checked: force, onChange: (event) => setForce(event.target.checked) }),
+              'div',
+              { className: 'lf-row' },
+              h('input', { value: root, placeholder: '绝对路径', onChange: (event) => setRoot(event.target.value) }),
+              h(
+                'button',
+                {
+                  className: 'lf-button',
+                  type: 'button',
+                  onClick: () => {
+                    const next = root.trim();
+                    if (next.length === 0) {
+                      setError('请输入白名单根目录（绝对路径）');
+                      return;
+                    }
+                    if (!isAbsolutePath(next)) {
+                      setError(`白名单根目录必须是绝对路径：${next}`);
+                      return;
+                    }
+                    if (settings === null || settings === undefined) {
+                      setError('设置尚未载入，请稍候再试');
+                      return;
+                    }
+                    save({ allowRoots: [...settings.allowRoots, next] }, { clearRoot: true });
+                  },
+                },
+                '添加',
+              ),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, '环境'),
+            h(
+              'table',
+              { className: 'lf-table' },
+              h('tbody', null, (status?.environment?.checks ?? []).map((check) =>
+                h(
+                  'tr',
+                  { key: check.id },
+                  h('td', null, check.label),
+                  h('td', { className: check.status === 'OK' ? 'lf-ok' : 'lf-bad' }, check.status),
+                  h('td', null, check.version || check.detail || ''),
+                  h('td', null, check.install || ''),
+                ),
+              )),
             ),
             h(
               'button',
@@ -651,21 +445,251 @@ window.__ModuleLoader__.load({
                 className: 'lf-button',
                 type: 'button',
                 onClick: () => {
-                  request('/api/local-frames/videos/add', { path: path.trim(), recursive, force })
-                    .then((payload) => {
-                      setMessage(payload.message || '已添加');
-                      reload();
-                    })
+                  request('/api/local-frames/environment/recheck', {})
+                    .then(() => reload())
                     .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
                 },
               },
-              '添加',
+              '重新检查',
             ),
           ),
-          Paragraph(
-            status?.dataDir
-              ? `数据目录占用 ${status.dataDir.usedBytes} 字节，上限 ${status.dataDir.limitGb} GB，剩余 ${status.dataDir.freeGb ?? '未知'} GB`
-              : '数据目录占用读取中',
+        ),
+        h(
+          'section',
+          { className: 'lf-section' },
+          h('h3', { className: 'lf-section-title' }, '对象'),
+          h(
+            'div',
+            { className: 'lf-card' },
+            (status?.targets ?? []).length === 0
+              ? Paragraph('还没有对象。请让 agent 调用 lf_target_add。')
+              : h(
+                  'ul',
+                  null,
+                  status.targets.map((target) =>
+                    h(
+                      'li',
+                      { key: target.target_id },
+                      `${target.name}${target.archived ? '（已归档）' : ''}：${target.definition}`,
+                      target.archived
+                        ? null
+                        : h(
+                            'button',
+                            {
+                              className: 'lf-button',
+                              type: 'button',
+                              onClick: () => {
+                                request('/api/local-frames/targets/archive', { targetId: target.target_id })
+                                  .then(() => reload())
+                                  .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+                              },
+                            },
+                            '归档',
+                          ),
+                    ),
+                  ),
+                ),
+          ),
+        ),
+        h(
+          'section',
+          { className: 'lf-section' },
+          h('h3', { className: 'lf-section-title' }, '当前任务进度'),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, '任务'),
+            Paragraph(task === null || task === undefined ? '当前没有任务' : `${task.task_id} · ${task.status}`),
+            status?.pause?.reason ? Paragraph(`暂停原因：${status.pause.reason}`) : null,
+            funnel
+              ? h(
+                  'table',
+                  { className: 'lf-table' },
+                  h(
+                    'tbody',
+                    null,
+                    [
+                      ['导入', funnel.imported],
+                      ['探测成功', funnel.probed],
+                      ['抽帧', funnel.frames],
+                      ['重复跳过', funnel.duplicatesSkipped],
+                      ['已跳过（先前已处理）', funnel.skipped],
+                      ['已打标', funnel.judged],
+                      ['可导出', funnel.exportable],
+                      ['ERROR 文件', funnel.errors],
+                    ].map(([label, value]) => h('tr', { key: label }, h('td', null, label), h('td', null, String(value)))),
+                  ),
+                )
+              : null,
+            h(
+              'div',
+              { className: 'lf-row' },
+              h('button', { className: 'lf-button', type: 'button', onClick: () => act('pause') }, '暂停'),
+              h('button', { className: 'lf-button', type: 'button', onClick: () => act('resume') }, '继续'),
+              h('button', { className: 'lf-button', type: 'button', onClick: () => act('cancel') }, '取消'),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, '添加视频或目录'),
+            h(
+              'div',
+              { className: 'lf-row' },
+              h('input', { value: path, placeholder: '绝对路径', onChange: (event) => setPath(event.target.value) }),
+              h(
+                'label',
+                { className: 'lf-field' },
+                h('span', null, '递归'),
+                h('input', { type: 'checkbox', checked: recursive, onChange: (event) => setRecursive(event.target.checked) }),
+              ),
+              h(
+                'label',
+                { className: 'lf-field' },
+                h('span', null, '强制重跑（忽略先前已处理跳过）'),
+                h('input', { type: 'checkbox', checked: force, onChange: (event) => setForce(event.target.checked) }),
+              ),
+              h(
+                'button',
+                {
+                  className: 'lf-button',
+                  type: 'button',
+                  onClick: () => {
+                    request('/api/local-frames/videos/add', { path: path.trim(), recursive, force })
+                      .then((payload) => {
+                        setMessage(payload.message || '已添加');
+                        reload();
+                      })
+                      .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+                  },
+                },
+                '添加',
+              ),
+            ),
+            Paragraph(
+              status?.dataDir
+                ? `数据目录占用 ${status.dataDir.usedBytes} 字节，上限 ${status.dataDir.limitGb} GB，剩余 ${status.dataDir.freeGb ?? '未知'} GB`
+                : '数据目录占用读取中',
+            ),
+          ),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, '处理顺序'),
+            (status?.items ?? []).length === 0
+              ? Paragraph('还没有视频')
+              : h(
+                  'ol',
+                  null,
+                  status.items.map((item) =>
+                    h(
+                      'li',
+                      { key: item.item_id, className: item.state === 'ERROR' ? 'lf-bad' : item.skipped ? 'lf-muted' : undefined },
+                      `#${item.position} ${item.title || item.local_path} · ${stateLabel(item)}`,
+                    ),
+                  ),
+                ),
+            Paragraph('按导入顺序处理；目录内按路径字典序。'),
+          ),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, 'ERROR 文件'),
+            (status?.errors ?? []).length === 0
+              ? Paragraph('没有错误文件')
+              : h(
+                  'ul',
+                  null,
+                  status.errors.map((item) => h('li', { key: item.item_id }, `${item.local_path} · ${item.error_code || ''}`)),
+                ),
+            Array.isArray(task?.progress?.csvErrors) && task.progress.csvErrors.length > 0
+              ? h(
+                  'div',
+                  null,
+                  h('h3', null, 'CSV 解析失败'),
+                  h(
+                    'ul',
+                    null,
+                    task.progress.csvErrors.map((item) => h('li', { key: `${item.path}:${item.message}` }, `${item.path} · ${item.message}`)),
+                  ),
+                )
+              : null,
+          ),
+        ),
+        h(
+          'section',
+          { className: 'lf-section' },
+          h('h3', { className: 'lf-section-title' }, '导出'),
+          h(
+            'div',
+            { className: 'lf-card' },
+            Paragraph('只复用已完成任务的帧与标签，不重新抽帧、不调用模型；不勾选对象时导出任务全部对象。'),
+            taskTargets.length === 0
+              ? Paragraph('当前任务没有可导出的对象。')
+              : h(
+                  'div',
+                  { className: 'lf-checks' },
+                  taskTargets.map((target) =>
+                    h(
+                      'label',
+                      { key: target.target_id, className: 'lf-check' },
+                      h('input', {
+                        type: 'checkbox',
+                        checked: selectedTargets.includes(target.target_id),
+                        onChange: () => toggleTarget(target.target_id),
+                      }),
+                      target.name,
+                    ),
+                  ),
+                ),
+            h(
+              'div',
+              { className: 'lf-row' },
+              h(
+                'label',
+                { className: 'lf-check' },
+                h('input', { type: 'checkbox', checked: exportZip, onChange: (event) => setExportZip(event.target.checked) }),
+                '导出为 zip',
+              ),
+              h(
+                'label',
+                { className: 'lf-check' },
+                h('input', {
+                  type: 'checkbox',
+                  checked: exportByObject,
+                  onChange: (event) => setExportByObject(event.target.checked),
+                }),
+                '按对象分目录（images/<对象>/）',
+              ),
+              h('button', { className: 'lf-button', type: 'button', disabled: exporting, onClick: runExport }, exporting ? '导出中…' : '导出'),
+            ),
+            Paragraph('每次导出都新建目录或 zip，不会覆盖之前的导出；写入设置页配置的导出目录。'),
+          ),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, '最近导出'),
+            recentExports.length === 0
+              ? Paragraph('还没有导出记录')
+              : h(
+                  'table',
+                  { className: 'lf-table' },
+                  h('thead', null, h('tr', null, ['时间', '对象', '数量', '路径'].map((label) => h('th', { key: label }, label)))),
+                  h(
+                    'tbody',
+                    null,
+                    recentExports.map((record) =>
+                      h(
+                        'tr',
+                        { key: record.directory },
+                        h('td', null, formatTime(record.exported_at)),
+                        h('td', null, (record.target_names ?? []).join('、') || '全部对象'),
+                        h('td', null, `${record.images ?? 0}${record.zip ? '（zip）' : ''}`),
+                        h('td', { className: 'lf-toast-path' }, record.directory),
+                      ),
+                    ),
+                  ),
+                ),
           ),
         ),
       );
@@ -690,23 +714,11 @@ window.__ModuleLoader__.load({
         const unregister = ctx.slots.register(
           {
             name: 'settings.section',
-            id: 'local-frames-settings',
+            id: 'local-frames',
             order: 100,
-            label: '本地视频帧 · 设置',
+            label: '本地视频帧',
           },
-          SettingsPage,
-        );
-        return () => unregister();
-      });
-      ctx.slots.inject('settings.section', () => {
-        const unregister = ctx.slots.register(
-          {
-            name: 'settings.section',
-            id: 'local-frames-progress',
-            order: 101,
-            label: '本地视频帧 · 进度',
-          },
-          ProgressPage,
+          LocalFramesPage,
         );
         return () => unregister();
       });
