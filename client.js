@@ -461,33 +461,21 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'lf-card' },
-            (status?.targets ?? []).length === 0
+            (status?.targets ?? []).filter((target) => !target.archived).length === 0
               ? Paragraph('还没有对象。请让 agent 调用 lf_target_add。')
               : h(
                   'ul',
                   null,
-                  status.targets.map((target) =>
-                    h(
-                      'li',
-                      { key: target.target_id },
-                      `${target.name}${target.archived ? '（已归档）' : ''}：${target.definition}`,
-                      target.archived
-                        ? null
-                        : h(
-                            'button',
-                            {
-                              className: 'lf-button',
-                              type: 'button',
-                              onClick: () => {
-                                request('/api/local-frames/targets/archive', { targetId: target.target_id })
-                                  .then(() => reload())
-                                  .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-                              },
-                            },
-                            '归档',
-                          ),
-                    ),
-                  ),
+                  (status.targets ?? [])
+                    .filter((target) => !target.archived)
+                    .map((target) => {
+                      const aliases = Object.values(target.aliases ?? {}).flat().filter((entry) => typeof entry === 'string');
+                      return h(
+                        'li',
+                        { key: target.target_id },
+                        `${target.name}：${target.definition}${aliases.length > 0 ? `（别名：${aliases.join('、')}）` : ''}`,
+                      );
+                    }),
                 ),
           ),
         ),
