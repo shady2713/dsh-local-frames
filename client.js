@@ -295,6 +295,13 @@ window.__ModuleLoader__.load({
       const [path, setPath] = React.useState('');
       const [recursive, setRecursive] = React.useState(true);
       const [message, setMessage] = React.useState('');
+      const lastPathFilled = React.useRef(false);
+      React.useEffect(() => {
+        if (lastPathFilled.current || status === null) return;
+        lastPathFilled.current = true;
+        const lastImportPath = status.settings?.lastImportPath;
+        if (typeof lastImportPath === 'string' && lastImportPath.length > 0) setPath(lastImportPath);
+      }, [status]);
       React.useEffect(() => {
         const timer = setInterval(reload, 3000);
         return () => clearInterval(timer);
@@ -447,7 +454,6 @@ window.__ModuleLoader__.load({
                   request('/api/local-frames/videos/add', { path: path.trim(), recursive })
                     .then((payload) => {
                       setMessage(payload.message || '已添加');
-                      setPath('');
                       reload();
                     })
                     .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));

@@ -321,17 +321,19 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 
 ## 10. 导出
 
-每次导出新建一个文件夹 `exports/<时间>/`，导出后不再修改。
+每次导出在设置的导出目录下新建一个文件夹 `<导出目录>/<时间>/`，导出后不再修改。导出目录是设置页里的绝对路径（§12.1）；未设置时使用默认目录 `dataDir/exports`。
 
 ### 10.1 目录结构
 
 ```
-exports/2026-01-01_120000/
+<导出目录>/2026-01-01_120000/
 ├── images/          原始分辨率帧（硬链接，不占额外空间）
 ├── labels.csv
 ├── sources.csv
 └── README.txt
 ```
+
+`<导出目录>` 默认为 `dataDir/exports`。导出只读取用户原视频，不删除、不移动、不改写原文件。
 
 图片文件名：`<原文件主名>-<frame_id>.jpg`；字符只保留字母、数字、`-`、`_`，重名加序号。`labels.csv` 和 `sources.csv` 的 `file_name` 必须与图片文件名一致。
 
@@ -388,7 +390,7 @@ exports/2026-01-01_120000/
 
 | 表 | 主要字段 |
 |---|---|
-| `settings` | key, value_json（模型、磁盘上限、预算、抽帧间隔、允许根目录；**不含密钥**） |
+| `settings` | key, value_json（模型、磁盘上限、预算、抽帧间隔、导出目录、最近导入路径、允许根目录；**不含密钥**） |
 | `targets` | target_id, name, aliases_json, definition, archived |
 | `tasks` | task_id, spec_json（对象、抽帧参数、预算）, progress_json, status |
 | `items` | item_id, task_id, local_path, file_sha256, file_bytes, title（=文件名）, author, license_raw, region, region_evidence, probe_json, state（NEW/PROBED/FRAMED/DONE/ERROR）, error_code, attempts |
@@ -404,9 +406,10 @@ exports/2026-01-01_120000/
 
 - 模型下拉（来自 `ctx.llm`）；
 - 数据目录（来自插件配置字段 `dataDir`，页面只读展示）与磁盘上限；
+- 导出目录（绝对路径，默认 `dataDir/exports`；留空表示使用默认目录；保存后重新打开仍显示当前值）；
 - 每任务模型调用预算（默认 3000）；
 - 抽帧间隔（秒，默认 2，范围 1–3600）；
-- **允许读取的视频根目录白名单**（可增删；为空时拒绝一切导入）；
+- **允许读取的视频根目录白名单**（可增删；为空时拒绝一切导入）。路径输入框和「保存」一起提交，首次添加即写入 `settings` 并立刻显示在列表中；设置尚未载入时不得静默丢弃，非绝对路径等校验失败要在页面上说明原因；
 - 环境检查区：Node / npm / ffmpeg / ffprobe / DSH / Git 版本，`OK` / `MISSING` / `TOO_OLD` 状态，缺失项的安装提示和“重新检查”按钮（见 §15.1）；
 - 保存立即生效。
 
@@ -418,8 +421,8 @@ exports/2026-01-01_120000/
 - `ERROR` 文件清单（路径 + 原因）；
 - 数据目录占用；
 - 暂停 / 继续 / 取消；
-- 导出按钮；
-- 本地路径导入框。
+- 导出按钮（导出到设置页配置的导出目录）；
+- 本地路径导入框（最近一次提交的绝对路径写入 `settings`，重新打开插件时回填并可见）。
 
 写明“关窗口不会停止采集，要停请点暂停”。
 
