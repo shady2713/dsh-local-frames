@@ -14,6 +14,7 @@ const snapshot = {
     dataDirLimitGb: 50,
     budgetPerTask: 3000,
     frameIntervalSeconds: 2,
+    visionConcurrency: 2,
     exportDir: null,
     lastImportPath: null,
     allowRoots: [],

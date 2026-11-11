@@ -473,3 +473,169 @@ describe('restart and failure accounting', () => {
     }
   });
 });
+
+describe('parallel vision calls', () => {
+  const unusedMedia: MediaClient = {
+    probeDuration: async () => ({ ok: false, error: 'unused' }),
+    extractFrame: async () => ({ ok: false, error: 'unused', timedOut: false }),
+    decodeGray: async () => ({ ok: false, error: 'unused' }),
+    shrinkJpeg: async () => ({ ok: false, error: 'unused' }),
+  };
+
+  function seedJudgingTask(
+    db: ReturnType<typeof openDatabase>,
+    dataDir: string,
+    frameCount: number,
+  ): { taskId: string; frameIds: string[] } {
+    const now = new Date().toISOString();
+    db.raw
+      .prepare('INSERT INTO tasks (task_id, spec_json, progress_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(
+        'task',
+        JSON.stringify({ targetIds: ['tgt'], frameIntervalSeconds: 2, budgetPerTask: 3000, model: { provider: 'example', model: 'vision' } }),
+        '{}',
+        'RUNNING',
+        now,
+        now,
+      );
+    db.raw
+      .prepare('INSERT INTO targets (target_id, name, aliases_json, definition, archived, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)')
+      .run('tgt', 'object-a', '{}', '一个物体。', now, now);
+    db.raw
+      .prepare(
+        `INSERT INTO items (item_id, task_id, local_path, file_sha256, file_bytes, title, probe_json, state, created_at, updated_at)
+         VALUES ('item', 'task', '/tmp/video.mp4', 'hash', 10, 'video.mp4', '{"duration":2}', 'FRAMED', ?, ?)`,
+      )
+      .run(now, now);
+    const frameIds: string[] = [];
+    for (let index = 0; index < frameCount; index += 1) {
+      const frameId = `frame-${index}`;
+      frameIds.push(frameId);
+      const path = join(dataDir, 'frames', 'task', `${frameId}.jpg`);
+      writeFixtureFile(path, frameId);
+      db.raw
+        .prepare(
+          `INSERT INTO frames (frame_id, item_id, t_ms, path, dhash, state, created_at, updated_at)
+           VALUES (?, 'item', ?, ?, ?, 'PENDING', ?, ?)`,
+        )
+        .run(frameId, 1000 + index, path, `0123456789abcde${index}`, now, now);
+    }
+    return { taskId: 'task', frameIds };
+  }
+
+  function judgeAll(objects: Array<{ name: string }>) {
+    return {
+      ok: true as const,
+      text: JSON.stringify({
+        objects: objects.map((object) => ({
+          name: object.name,
+          verdict: 'PRESENT',
+          visibility: 'SMALL',
+          confidence: 0.8,
+          reason: '轮廓完整',
+        })),
+      }),
+      tokens: 3,
+      ms: 1,
+    };
+  }
+
+  it('keeps at most visionConcurrency calls in flight and actually runs them in parallel', async () => {
+    const dataDir = makeTempDir('lf-concurrency-');
+    const db = openDatabase(dataDir);
+    const settings = new SettingsStore(db);
+    settings.update({ model: { provider: 'example', model: 'vision' }, visionConcurrency: 2 });
+    seedJudgingTask(db, dataDir, 4);
+    let inFlight = 0;
+    let peak = 0;
+    let calls = 0;
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async () => {
+        calls += 1;
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        inFlight -= 1;
+        return judgeAll([{ name: 'object-a' }]);
+      },
+    };
+    const pipeline = new Pipeline({ db, settings, dataDir, media: unusedMedia, vision, sleep: async () => undefined, minFreeGb: 0 });
+    try {
+      await pipeline.runUntilIdle();
+      expect(peak).toBe(2);
+      expect(calls).toBe(4);
+      const judged = db.raw.prepare("SELECT COUNT(*) AS count FROM frames WHERE state = 'JUDGED'").get() as { count?: number };
+      expect(judged.count).toBe(4);
+      const labels = db.raw.prepare('SELECT COUNT(*) AS count FROM labels').get() as { count?: number };
+      expect(labels.count).toBe(4);
+      const item = db.raw.prepare("SELECT state FROM items WHERE item_id = 'item'").get() as { state?: string };
+      expect(item.state).toBe('DONE');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('runs one call at a time when visionConcurrency is 1', async () => {
+    const dataDir = makeTempDir('lf-serial-');
+    const db = openDatabase(dataDir);
+    const settings = new SettingsStore(db);
+    settings.update({ model: { provider: 'example', model: 'vision' }, visionConcurrency: 1 });
+    seedJudgingTask(db, dataDir, 3);
+    let inFlight = 0;
+    let peak = 0;
+    let calls = 0;
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async () => {
+        calls += 1;
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        return judgeAll([{ name: 'object-a' }]);
+      },
+    };
+    const pipeline = new Pipeline({ db, settings, dataDir, media: unusedMedia, vision, sleep: async () => undefined, minFreeGb: 0 });
+    try {
+      await pipeline.runUntilIdle();
+      expect(peak).toBe(1);
+      expect(calls).toBe(3);
+      const judged = db.raw.prepare("SELECT COUNT(*) AS count FROM frames WHERE state = 'JUDGED'").get() as { count?: number };
+      expect(judged.count).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('never spends more call rows than the budget while calls run in parallel', async () => {
+    const dataDir = makeTempDir('lf-concurrency-budget-');
+    const db = openDatabase(dataDir);
+    const settings = new SettingsStore(db);
+    settings.update({ model: { provider: 'example', model: 'vision' }, visionConcurrency: 2, budgetPerTask: 3 });
+    seedJudgingTask(db, dataDir, 4);
+    let calls = 0;
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async () => {
+        calls += 1;
+        return judgeAll([{ name: 'object-a' }]);
+      },
+    };
+    const pipeline = new Pipeline({ db, settings, dataDir, media: unusedMedia, vision, sleep: async () => undefined, minFreeGb: 0 });
+    try {
+      await pipeline.runUntilIdle();
+      const task = db.raw.prepare('SELECT status, progress_json FROM tasks').get() as { status: string; progress_json: string };
+      expect(task.status).toBe('PAUSED');
+      expect(task.progress_json).toContain('BUDGET');
+      const rows = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
+      expect(rows.count).toBe(3);
+      expect(calls).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+});

@@ -70,6 +70,8 @@ export class Pipeline {
   private chain: Promise<void> = Promise.resolve();
   private stopped = false;
   private readonly credentialRetry = { used: false };
+  /** Slots reserved by attempts that are in flight but not yet written to `calls`. */
+  private readonly budgetInFlight = new Map<string, number>();
 
   constructor(private readonly deps: PipelineDeps) {}
 
@@ -225,17 +227,31 @@ export class Pipeline {
     return typeof row?.count === 'number' ? row.count : 0;
   }
 
-  private assertBudget(taskId: string): void {
+  /**
+   * Reserve one call before it starts. Counting in-flight attempts keeps the
+   * parallel path from launching more calls than the task budget allows.
+   */
+  private reserveBudget(taskId: string): void {
     const settings = this.deps.settings.load();
     const budget = settings.budgetPerTask;
     const used = this.callCount(taskId);
-    if (used >= budget) {
-      throw new TaskPause('BUDGET', `模型调用预算已用尽（${used}/${budget}）`, { used, budget });
+    const reserved = this.budgetInFlight.get(taskId) ?? 0;
+    if (used + reserved >= budget) {
+      throw new TaskPause('BUDGET', `模型调用预算已用尽（${used + reserved}/${budget}）`, { used: used + reserved, budget });
     }
+    this.budgetInFlight.set(taskId, reserved + 1);
+  }
+
+  private releaseBudget(taskId: string, count = 1): void {
+    const reserved = this.budgetInFlight.get(taskId) ?? 0;
+    const next = Math.max(0, reserved - count);
+    if (next === 0) this.budgetInFlight.delete(taskId);
+    else this.budgetInFlight.set(taskId, next);
   }
 
   private async advance(task: TaskRecord): Promise<StepResult> {
     this.assertCapacity(task.task_id);
+    this.markFramedItemsDone(task.task_id);
     const item = this.deps.db.raw
       .prepare(
         `SELECT item_id, task_id, local_path, state, probe_json, attempts FROM items
@@ -255,8 +271,22 @@ export class Pipeline {
       await this.extractOne(task, item);
       return 'worked';
     }
-    await this.judgeOne(task, item);
+    await this.judgePending(task);
     return 'worked';
+  }
+
+  /** An item with no pending frame is finished even if its earlier frames failed. */
+  private markFramedItemsDone(taskId: string): void {
+    this.deps.db.raw
+      .prepare(
+        `UPDATE items SET state = 'DONE', updated_at = ?
+         WHERE task_id = ? AND state = 'FRAMED'
+           AND NOT EXISTS (
+             SELECT 1 FROM frames
+             WHERE frames.item_id = items.item_id AND frames.state = 'PENDING' AND frames.path IS NOT NULL
+           )`,
+      )
+      .run(nowIso(this.now()), taskId);
   }
 
   private probe(item: ItemRecord): Promise<void> {
@@ -378,62 +408,91 @@ export class Pipeline {
     return null;
   }
 
-  private async judgeOne(task: TaskRecord, item: ItemRecord): Promise<void> {
-    const frame = this.deps.db.raw
-      .prepare(
-        `SELECT frame_id, path FROM frames
-         WHERE item_id = ? AND state = 'PENDING' AND path IS NOT NULL
-         ORDER BY t_ms ASC, rowid ASC LIMIT 1`,
-      )
-      .get(item.item_id) as { frame_id: string; path: string } | undefined;
-    if (frame === undefined) {
-      this.deps.db.raw
-        .prepare("UPDATE items SET state = 'DONE', updated_at = ? WHERE item_id = ?")
-        .run(nowIso(this.now()), item.item_id);
-      return;
-    }
+  /**
+   * Label up to `visionConcurrency` pending frames of the task in parallel.
+   * Frame selection is task-wide so short videos (one pending frame each) do
+   * not force the whole run back to serial calls.
+   */
+  private async judgePending(task: TaskRecord): Promise<void> {
     const spec = readSpec(task.spec_json);
     const settings = this.deps.settings.load();
     const model = settings.model ?? spec.model;
     if (model === null) throw new TaskPause('NO_MODEL', '未选择模型');
     const targets = this.loadObjects(spec.targetIds);
     if (targets.length === 0) throw new TaskPause('NO_TARGET', '任务没有可判断的对象');
+    const frames = this.deps.db.raw
+      .prepare(
+        `SELECT frames.frame_id, frames.path FROM frames
+         JOIN items ON items.item_id = frames.item_id
+         WHERE items.task_id = ? AND frames.state = 'PENDING' AND frames.path IS NOT NULL
+         ORDER BY items.created_at ASC, items.rowid ASC, frames.t_ms ASC, frames.rowid ASC
+         LIMIT ?`,
+      )
+      .all(task.task_id, settings.visionConcurrency) as unknown as Array<{ frame_id: string; path: string }>;
+    if (frames.length === 0) return;
     const modelName = `${model.provider}/${model.model}`.slice(0, 200);
-    const result = await judgeBatch({
-      vision: this.deps.vision,
-      provider: model.provider,
-      model: model.model,
-      objects: targets,
-      imagePath: frame.path,
-      taskId: task.task_id,
-      sleep: (ms) => this.sleep(ms),
-      beforeCall: () => {
-        this.assertBudget(task.task_id);
-        this.assertCapacity(task.task_id);
-      },
-      onAttempt: (attempt) => this.insertCall(frame.frame_id, modelName, attempt),
-      credentialRetry: this.credentialRetry,
-    });
-    if (!result.ok) {
-      if (result.reason === 'format') {
-        this.failModelFrame(task.task_id, frame.frame_id, frame.path, result.message);
-      } else {
-        this.noteCallStreak(task.task_id);
+    const settled = await Promise.allSettled(
+      frames.map((frame) => this.judgeFrame(task, frame, targets, model.provider, model.model, modelName)),
+    );
+    const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
+    if (failed !== undefined) throw failed.reason;
+  }
+
+  private async judgeFrame(
+    task: TaskRecord,
+    frame: { frame_id: string; path: string },
+    targets: readonly PromptObject[],
+    provider: string,
+    model: string,
+    modelName: string,
+  ): Promise<void> {
+    // Every attempt reserves a budget slot until its row is written, so parallel
+    // frames cannot jointly start more calls than the task budget allows.
+    let pendingReservations = 0;
+    try {
+      const result = await judgeBatch({
+        vision: this.deps.vision,
+        provider,
+        model,
+        objects: targets,
+        imagePath: frame.path,
+        taskId: task.task_id,
+        sleep: (ms) => this.sleep(ms),
+        beforeCall: () => {
+          this.assertCapacity(task.task_id);
+          this.reserveBudget(task.task_id);
+          pendingReservations += 1;
+        },
+        onAttempt: (attempt) => {
+          pendingReservations = Math.max(0, pendingReservations - 1);
+          this.releaseBudget(task.task_id);
+          this.insertCall(frame.frame_id, modelName, attempt);
+        },
+        credentialRetry: this.credentialRetry,
+      });
+      if (!result.ok) {
+        if (result.reason === 'format') {
+          this.failModelFrame(task.task_id, frame.frame_id, frame.path, result.message);
+        } else {
+          this.noteCallStreak(task.task_id);
+        }
+        return;
       }
-      return;
+      const accepted = targets.map((source) => {
+        const object = result.objects.find((entry) => entry.name === source.name);
+        if (object === undefined) throw new TaskPause('INTERNAL', `模型输出缺少对象 ${source.name}`);
+        return {
+          object: source,
+          verdict: object.verdict,
+          visibility: object.visibility,
+          confidence: object.confidence,
+          reason: object.reason,
+        };
+      });
+      this.commitLabels(task.task_id, frame.frame_id, frame.path, accepted);
+    } finally {
+      if (pendingReservations > 0) this.releaseBudget(task.task_id, pendingReservations);
     }
-    const accepted = targets.map((source) => {
-      const object = result.objects.find((entry) => entry.name === source.name);
-      if (object === undefined) throw new TaskPause('INTERNAL', `模型输出缺少对象 ${source.name}`);
-      return {
-        object: source,
-        verdict: object.verdict,
-        visibility: object.visibility,
-        confidence: object.confidence,
-        reason: object.reason,
-      };
-    });
-    this.commitLabels(task.task_id, frame.frame_id, frame.path, accepted);
   }
 
   private loadObjects(targetIds: readonly string[]): PromptObject[] {

@@ -15,6 +15,8 @@ export interface Settings {
   dataDirLimitGb: number;
   budgetPerTask: number;
   frameIntervalSeconds: number;
+  /** Number of frames labelled in parallel; 1 means one model call at a time. */
+  visionConcurrency: number;
   /** Absolute export directory; null means the default `<dataDir>/exports`. */
   exportDir: string | null;
   /** Last absolute path submitted on the progress page; refilled when it reopens. */

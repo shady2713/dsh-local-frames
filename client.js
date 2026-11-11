@@ -70,6 +70,7 @@ window.__ModuleLoader__.load({
       const [limit, setLimit] = React.useState('50');
       const [budget, setBudget] = React.useState('3000');
       const [interval, setIntervalSeconds] = React.useState('2');
+      const [concurrency, setConcurrency] = React.useState('2');
       const [exportDir, setExportDir] = React.useState('');
       const [root, setRoot] = React.useState('');
       const [message, setMessage] = React.useState('');
@@ -83,6 +84,7 @@ window.__ModuleLoader__.load({
         setLimit(String(status.settings.dataDirLimitGb));
         setBudget(String(status.settings.budgetPerTask));
         setIntervalSeconds(String(status.settings.frameIntervalSeconds));
+        setConcurrency(String(status.settings.visionConcurrency));
         setExportDir(status.settings.exportDir ?? '');
       }, [status]);
       const save = (patch, options) => {
@@ -163,6 +165,7 @@ window.__ModuleLoader__.load({
             h('label', { className: 'lf-field' }, '磁盘上限 GB', h('input', { value: limit, onChange: (event) => setLimit(event.target.value) })),
             h('label', { className: 'lf-field' }, '每任务预算', h('input', { value: budget, onChange: (event) => setBudget(event.target.value) })),
             h('label', { className: 'lf-field' }, '抽帧间隔（秒）', h('input', { value: interval, onChange: (event) => setIntervalSeconds(event.target.value) })),
+            h('label', { className: 'lf-field' }, '判定并发（1–8）', h('input', { value: concurrency, onChange: (event) => setConcurrency(event.target.value) })),
             h(
               'button',
               {
@@ -188,6 +191,7 @@ window.__ModuleLoader__.load({
                       dataDirLimitGb: Number(limit),
                       budgetPerTask: Number(budget),
                       frameIntervalSeconds: Number(interval),
+                      visionConcurrency: Number(concurrency),
                       exportDir: dir.length > 0 ? dir : null,
                       allowRoots: nextRoot.length > 0 ? [...settings.allowRoots, nextRoot] : settings.allowRoots,
                     },
