@@ -3,7 +3,7 @@ import { isAbsolute } from 'node:path';
 import type { LocalFramesDatabase } from './db.js';
 import { exportTask } from './export.js';
 import { HttpError, guard, readJsonBody, requireMethod, sendJson } from './http.js';
-import { describeIngest, ingestPaths } from './ingest.js';
+import { describeIngest, acceptedCount, ingestPaths } from './ingest.js';
 import { nowIso } from './ids.js';
 import { controlTask } from './pipeline.js';
 import type { Pipeline } from './pipeline.js';
@@ -125,6 +125,9 @@ export function createRoutes(
       if (body.recursive !== undefined && typeof body.recursive !== 'boolean') {
         throw new HttpError(400, 'INVALID_BODY', 'recursive 必须是布尔值');
       }
+      if (body.force !== undefined && typeof body.force !== 'boolean') {
+        throw new HttpError(400, 'INVALID_BODY', 'force 必须是布尔值');
+      }
       const importPath = body.path.trim();
       // Remember the path users actually submitted so the progress page can
       // refill it after a reload. Relative paths are rejected by ingest.
@@ -138,13 +141,20 @@ export function createRoutes(
       }
       const taskId = activeTaskId(services.db);
       if (taskId === null) throw new HttpError(409, 'NO_TASK', '没有进行中或暂停的任务');
-      const report = await ingestPaths(services.db, taskId, services.dataDir, services.settings.load().allowRoots, [
-        { path: importPath, recursive: body.recursive !== false },
-      ]);
-      if (report.added.length === 0 && report.existing.length > 0 && report.rejected.length === 0) {
-        throw new HttpError(409, 'EXISTS', '已存在');
+      const report = await ingestPaths(
+        services.db,
+        taskId,
+        services.dataDir,
+        services.settings.load().allowRoots,
+        [{ path: importPath, recursive: body.recursive !== false }],
+        { force: body.force === true },
+      );
+      if (acceptedCount(report) === 0) {
+        if (report.existing.length > 0 && report.rejected.length === 0) {
+          throw new HttpError(409, 'EXISTS', '已存在');
+        }
+        throw new HttpError(400, 'REJECTED', report.rejected[0]?.message ?? '没有可用的视频');
       }
-      if (report.added.length === 0) throw new HttpError(400, 'REJECTED', report.rejected[0]?.message ?? '没有可用的视频');
       services.pipeline.kick();
       sendJson(res, 200, { status: 'OK', message: describeIngest(report), data: report });
       return;
