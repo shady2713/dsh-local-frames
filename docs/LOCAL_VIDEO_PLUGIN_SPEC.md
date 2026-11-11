@@ -43,10 +43,10 @@
 | R6 | 模型打标 | 每张去重后的唯一帧一次调用、同一提示词、只接受规定 JSON；一次调用纳入任务全部对象，每个对象都要有判决；并发路数可配（1–8，默认 2） | §7 |
 | R7 | 标签规则 | 无成功模型调用不能 `QUALIFIED`；只有明确 `ABSENT` 才写 `0` | §7.4、§10.2 |
 | R8 | 出错与暂停 | 文件错误 / 模型暂停 / 磁盘暂停分开；错误不记成标签 | §8 |
-| R9 | 导出 | `images/` 硬链接 + `labels.csv` + `sources.csv` + `README.txt`；`family_id` = 文件 SHA-256；8:2 | §10 |
+| R9 | 导出 | 新建时间戳目录或 zip：`images/` + `labels.csv` + `sources.csv` + `README.txt` + `stats.json`；对象筛选、按对象分目录、zip 可选；`family_id` = 文件 SHA-256；8:2；可重复导出且不覆盖旧产物 | §10 |
 | R10 | 清理 | 过程文件用完即删；**用户原视频从不删除、移动、改名** | §11 |
 | R11 | 重做与恢复 | 每步可重做；重启后继续；不重复计数 | §9 |
-| R12 | 进度页 | 文件漏斗（含重复跳过数与已跳过数）、处理顺序、错误清单、暂停/继续/取消、添加视频/目录 | §12.2 |
+| R12 | 进度页 | 文件漏斗（含重复跳过数与已跳过数）、处理顺序、错误清单、暂停/继续/取消、添加视频/目录、导出区（对象筛选/zip/分目录）、导出 toast 与打开目录、最近导出记录 | §12.2 |
 | R13 | 设置页 | 模型、数据目录与上限、预算、抽帧间隔、判定并发、允许根目录白名单 | §12.1 |
 | R14 | agent 工具 | 6 个 `lf_*` 工具，参数和拒绝条件见规格 | §13 |
 | R15 | 规模上限 | 7 表 / 6 工具 / 2 页签 / 1 模型 / 1 提示词 / 1 任务 / 2 个子进程 | §3.1 |
@@ -64,7 +64,7 @@
 5. 让 agent 调 `lf_collect_start` 建任务并开始；可以把首批视频路径直接放进 `paths`。
 6. 之后随时用 `lf_video_add` 追加视频文件或目录。
 7. 插件在后台按状态机抽帧、帧去重、调用模型打标，进度页实时显示处理顺序、漏斗（含重复跳过数与“已跳过（先前已处理）”数）和错误文件。新任务默认跳过此前已完成抽帧和打标的同一文件；只有显式 `force` 才重跑。
-8. 让 agent 调 `lf_export` 导出，拿到 `images/` + `labels.csv` + `sources.csv` + `README.txt`。
+8. 让 agent 调 `lf_export` 导出，拿到 `images/` + `labels.csv` + `sources.csv` + `README.txt` + `stats.json`；可按对象筛选、导出 zip 或按对象分目录，进度页也提供同样的导出区、最近导出记录和打开目录按钮。
 
 关掉窗口不会停止任务；要停只能点“暂停”。
 
@@ -335,25 +335,28 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 
 ## 10. 导出
 
-每次导出在设置的导出目录下新建一个文件夹 `<导出目录>/<时间>/`，导出后不再修改。导出目录是设置页里的绝对路径（§12.1）；未设置时使用默认目录 `dataDir/exports`。
+每次导出都在设置的导出目录下新建产物，导出后不再修改、也不覆盖旧导出：默认是文件夹 `<导出目录>/<时间>/`，选择 zip 时是 `<导出目录>/<时间>.zip`；同一秒内重复导出用 `-2`、`-3` 后缀区分。导出目录是设置页里的绝对路径（§12.1）；未设置时使用默认目录 `dataDir/exports`。已完成任务可以反复导出，只复用数据库中已有的帧与标签，绝不重新抽帧、绝不调用模型。
 
 ### 10.1 目录结构
 
 ```
 <导出目录>/2026-01-01_120000/
-├── images/          原始分辨率帧（硬链接，不占额外空间）
+├── images/          原始分辨率帧（硬链接，不占额外空间；按对象分目录时见 §10.7）
 ├── labels.csv
 ├── sources.csv
-└── README.txt
+├── README.txt
+└── stats.json       统计报表（§10.9）
 ```
+
+选择 zip 时产物是 `<导出目录>/2026-01-01_120000.zip`，zip 根目录同样包含 `images/`、`labels.csv`、`sources.csv`、`README.txt`、`stats.json`。
 
 `<导出目录>` 默认为 `dataDir/exports`。导出只读取用户原视频，不删除、不移动、不改写原文件。
 
-图片文件名：`<原文件主名>-<frame_id>.jpg`；字符只保留字母、数字、`-`、`_`，重名加序号。`labels.csv` 和 `sources.csv` 的 `file_name` 必须与图片文件名一致。
+图片文件名：`<原文件主名>-<frame_id>.jpg`；字符只保留字母、数字、`-`、`_`，重名加序号。`labels.csv` 和 `sources.csv` 的 `file_name` 必须指向实际图片（未分目录时为图片文件名，分目录时为相对路径，见 §10.7）。
 
 ### 10.2 labels.csv
 
-列：`file_name`, `split`, `family_id`, 然后每个对象一列。
+列：`file_name`, `split`, `family_id`, 然后每个对象一列。按对象筛选导出时只保留本次所选对象的列（§10.6）。
 
 单元格取值：
 
@@ -365,6 +368,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 
 列：`file_name`, `local_path`, `file_sha256`, `t_ms`, `family_id`, `url`, `author`, `license_raw`, `region`, `region_evidence`。
 
+- `file_name` 与 `labels.csv` 相同；按对象分目录时是相对导出根目录的路径；
 - `local_path` 是原文件绝对路径，`file_sha256` 是原文件哈希；
 - `url` / `author` / `license_raw`（来自 CSV 的 `license`）/ `region` / `region_evidence` 只在用户 CSV 如实给出时才有值，否则留空；`region` 默认 `UNKNOWN`；
 - 不写渠道、不编造 URL、标题、作者、时间。
@@ -381,6 +385,40 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 - 绝不能用“渠道 + 作者”之类的字段做家族键——本地文件没有这些信息，而且同一视频的帧必须留在同一边。
 
 实现参考：`parseInt(sha256(family).slice(0, 2), 16) < 205 ? 'train' : 'val'`。
+
+### 10.6 对象筛选
+
+- `lf_export` 的 `targetIds` 与进度页导出区的对象勾选都可指定一个或多个对象；不传、不勾选表示任务全部对象，输出与旧版全量导出保持一致。
+- 只导出至少一个所选对象为 `QUALIFIED` 的帧；未选对象的标签不写入。
+- `labels.csv` 只保留所选对象的列，列顺序按本次选择顺序。
+- 所选对象必须属于该任务，否则导出失败并提示“对象不在该任务中”。
+- 导出只读取已有的帧与标签：不新增帧记录、不调用模型，因此同一任务可以换对象反复导出。
+
+### 10.7 按对象分目录
+
+- `byObject=true` 时图片写入 `images/<对象目录>/`。对象目录由对象名做文件名安全处理：NFKC 后只保留文字、数字、`-`、`_`，其他字符替换为 `-`，去掉首尾 `-`；空名用 `object`，重名加 `-2` 后缀。
+- 一帧对多个选中对象都是 `QUALIFIED` 时，在每个命中的对象目录各放一份（同磁盘硬链接）。
+- `labels.csv` 每帧只有一行；`file_name` 是按本次对象选择顺序第一个命中的对象目录下的相对路径（如 `object-a/clip-frame-id.jpg`）。其他目录中的副本同名，仅目录不同。
+- 未命中任何选中对象的帧不导出。不开 `byObject` 时保持旧布局 `images/<图片文件名>`。
+
+### 10.8 zip 导出
+
+- `zip=true` 时只生成 `<导出目录>/<时间>.zip`，不写同名目录；zip 根目录为 `images/`、`labels.csv`、`sources.csv`、`README.txt`、`stats.json`。
+- zip 以“不存在才创建”的方式写入；同名已存在时用 `-2`、`-3` 后缀，绝不覆盖旧导出。
+
+### 10.9 统计报表 stats.json
+
+- 任务与导出信息：`task_id`、`task_status`、`exported_at`（UTC）、`mode`（`full` / `selected`）、`zip`、`by_object`；
+- `selected_targets[]`：`target_id`、`name`、`directory`（未分目录为 `null`）、`qualified_frames`（本次导出中该对象 `QUALIFIED` 的帧数）；
+- 数量：`images`（导出帧数）、`image_copies`（实际图片副本数，分目录时可能大于帧数）、`train`、`val`；
+- 任务统计：`extracted_frames`（总抽帧数）、`judged_frames`（已打标帧数）、`duplicates_skipped`（去重跳过数）、`model_calls`、`model_calls_ok`、`items`。
+- `README.txt` 写明 stats.json 的位置与统计口径。
+
+### 10.10 最近导出记录与页面反馈
+
+- 每次成功导出都把记录写入现有 `settings` JSON 的 `recentExports`（不新增表）：`exported_at`、`task_id`、`target_ids`、`target_names`、`images`、`train`、`val`、`directory`、`zip`；最多保留 10 条，最新在前。旧设置缺少该字段时按空列表解析。
+- 进度页导出成功后显示显眼 toast：帧数与产物路径；提供「打开目录」按钮（`POST /api/local-frames/export/open`，只允许打开导出目录内的产物；zip 打开其父目录）和「复制路径」；打开失败时提示原因，并保留可复制的路径。
+- 进度页「最近导出」列表显示时间、对象、数量、路径。
 
 ---
 
@@ -404,7 +442,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 
 | 表 | 主要字段 |
 |---|---|
-| `settings` | key, value_json（模型、磁盘上限、预算、抽帧间隔、导出目录、最近导入路径、允许根目录；**不含密钥**） |
+| `settings` | key, value_json（模型、磁盘上限、预算、抽帧间隔、导出目录、最近导入路径、允许根目录、最近导出记录 `recentExports`；**不含密钥**） |
 | `targets` | target_id, name, aliases_json, definition, archived |
 | `tasks` | task_id, spec_json（对象、抽帧参数、预算）, progress_json, status |
 | `items` | item_id, task_id, local_path, file_sha256, file_bytes, title（=文件名）, author, license_raw, region, region_evidence, probe_json, state（NEW/PROBED/FRAMED/DONE/ERROR/SKIPPED）, error_code, attempts |
@@ -437,7 +475,9 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 - `ERROR` 文件清单（路径 + 原因）；
 - 数据目录占用；
 - 暂停 / 继续 / 取消；
-- 导出按钮（导出到设置页配置的导出目录）；
+- 导出区：对象多选（不选为全部）、可选 zip 与 `images/<对象>/` 分目录；导出到设置页配置的导出目录，每次新建目录或 zip；
+- 导出成功后显示 toast（帧数与路径），提供「打开目录」「复制路径」，打开失败有提示；
+- 「最近导出」列表显示时间、对象、数量、路径；
 - 本地路径导入框（最近一次提交的绝对路径写入 `settings`，重新打开插件时回填并可见），带“递归”和“强制重跑（忽略先前已处理跳过）”选项；不勾选强制时，先前已处理的视频只跳过、不重做。
 
 写明“关窗口不会停止采集，要停请点暂停”。
@@ -461,7 +501,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 | `lf_collect_start` | targetIds?, paths?, force? | 建任务并开始；`targetIds` 省略表示全部未归档对象；`paths` 可同时提交首批视频；`force=true` 才重跑此前已处理的文件；`paths` 为空且任务还没有视频时拒绝；已有进行中/暂停任务、缺模型、缺对象定义、白名单为空、磁盘不够则拒绝并列出缺项 |
 | `lf_video_add` | path, recursive?, force? | 提交本地视频文件或目录；按第 5 节校验；默认跳过此前已处理的视频，`force=true` 才重跑；没有进行中或暂停的任务时拒绝并提示先建任务；任务已结束也不能加 |
 | `lf_collect_control` | taskId, action（pause/resume/cancel） | 暂停、继续（含重试 `ERROR` 文件）、取消 |
-| `lf_export` | taskId? | 导出；省略表示当前任务或最近一个已完成任务 |
+| `lf_export` | taskId?, targetIds?, zip?, byObject? | 导出；省略 `taskId` 表示当前任务或最近一个已完成任务；`targetIds` 省略或为空表示任务全部对象（全量导出兼容），传入时只导出所选对象；`zip=true` 生成 zip；`byObject=true` 按对象分目录；只复用已有帧与标签，不抽帧、不调用模型 |
 
 额外配一份简短的 `SKILL.md`，说明调用顺序：
 
@@ -586,6 +626,10 @@ git --version
 - 任务结束：整夹全部完成后为 `DONE`；只剩 `ERROR` 或只剩 `SKIPPED` 时也立即结束，不无限等待。
 - 兼容：旧数据库（schema 1）和缺字段的旧设置/旧 `progress_json` 能正常打开并应用跳过规则。
 - 导出：至少一对象合格才导出；`family_id` 按文件哈希、两次导出划分一致、同一文件不跨 train/val；`sources.csv` 不出现编造字段。
+- 对象筛选：只选一个对象时 `images/` 只含该对象合格帧、`labels.csv` 只有该对象列；不选时输出与旧全量导出一致。
+- 重复导出：换对象再导出不新增帧/标签/模型调用，新目录或 zip 不覆盖旧产物。
+- 导出扩展：zip 内含 `images/<对象>/` 与 `stats.json`；最近导出记录持久化，旧设置缺字段可读。
+- 导出交互：成功 toast 显示路径与帧数；打开目录失败有提示，可复制路径。
 - 工具：6 个工具的成功、校验失败、状态不允许、重复调用；接口拒绝非回环 `Host` 和跨源 `Origin`。
 - 环境检查：Node 版本过低、`ffmpeg` / `ffprobe` 缺失、DSH 版本不满足时状态和提示正确；缺工具时插件不崩溃，只拒绝新任务。
 - 代码、默认配置、提示词、测试里搜不到测试对象名。
@@ -731,7 +775,7 @@ BUILT / TESTED / CONNECTED / NOT_RUN / BLOCKED 汇报。
 - [ ] 帧去重按第 6.6 节执行（dHash、≤16、同任务跨视频、保留先出现帧），重复帧不调用模型、不导出；
 - [ ] 模型提示词与第 7 节逐字一致，只输出对象判断；
 - [ ] 不做任何航拍/真实/质量/水印判断，不试判，不做画面质量筛选；只丢弃重复帧；
-- [ ] 导出目录结构、CSV 列、train/val 划分符合第 10 节；
+- [ ] 导出目录结构、CSV 列、train/val 划分、对象筛选、按对象分目录、zip、stats.json 与最近导出记录符合第 10 节；
 - [ ] `npm run typecheck` / `npm test` / `npm run build` 全绿；
 - [ ] 沙盒实测通过第 16.2 节；
 - [ ] 新电脑按 §15.1 / §15.2 检查并补齐环境后能加载；缺 Node / ffmpeg / ffprobe 时给出明确安装提示；
