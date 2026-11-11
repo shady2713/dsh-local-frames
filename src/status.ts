@@ -3,7 +3,7 @@ import type { LocalFramesDatabase } from './db.js';
 import type { SettingsStore } from './settings.js';
 import type { EnvironmentChecker } from './versions.js';
 import { readProgress, readSpec } from './progress.js';
-import type { FunnelStats, StatusSnapshot, TaskRow, TaskSummary, TaskTargetRef, TargetAliases } from './types.js';
+import type { FunnelStats, StatusFailedFrame, StatusSnapshot, TaskRow, TaskSummary, TaskTargetRef, TargetAliases } from './types.js';
 
 function parseJsonObject(text: string): Record<string, unknown> {
   try {
@@ -122,6 +122,19 @@ function itemsFor(db: LocalFramesDatabase, taskId: string | null): StatusSnapsho
   }));
 }
 
+/** FAILED frames of the current task; the page retries them one by one or in a batch. */
+function failedFramesFor(db: LocalFramesDatabase, taskId: string | null): StatusFailedFrame[] {
+  if (taskId === null) return [];
+  return db.raw
+    .prepare(
+      `SELECT frames.frame_id, frames.item_id, frames.t_ms, frames.error, items.local_path, items.title
+       FROM frames JOIN items ON items.item_id = frames.item_id
+       WHERE items.task_id = ? AND frames.state = 'FAILED'
+       ORDER BY items.created_at ASC, items.rowid ASC, frames.t_ms ASC, frames.rowid ASC`,
+    )
+    .all(taskId) as unknown as StatusFailedFrame[];
+}
+
 /** Compose the read-only status shared by `lf_status` and the plugin's status route. */
 export async function buildStatus(options: {
   db: LocalFramesDatabase;
@@ -179,6 +192,7 @@ export async function buildStatus(options: {
               "SELECT item_id, local_path, error_code FROM items WHERE task_id = ? AND state = 'ERROR' ORDER BY created_at ASC, rowid ASC",
             )
             .all(task.task_id) as Array<{ item_id: string; local_path: string; error_code: string | null }>),
+    failedFrames: failedFramesFor(db, task?.task_id ?? null),
     pause:
       task === null
         ? null

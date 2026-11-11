@@ -8,6 +8,7 @@ import { describeIngest, acceptedCount, ingestPaths } from './ingest.js';
 import { nowIso } from './ids.js';
 import { controlTask } from './pipeline.js';
 import type { Pipeline } from './pipeline.js';
+import { RetryError, retryTaskFailures } from './retry.js';
 import { SettingsError, type SettingsStore } from './settings.js';
 import { listTaskSummaries } from './status.js';
 import type { EnvironmentReport, StatusSnapshot } from './types.js';
@@ -180,6 +181,53 @@ export function createRoutes(
       if (!result.ok) throw new HttpError(409, 'BAD_STATE', result.message);
       if (body.action === 'resume') services.pipeline.kick();
       sendJson(res, 200, { status: 'OK', message: result.message, data: { task_id: body.taskId, task_status: result.status } });
+      return;
+    }
+    if (pathname === '/api/local-frames/retry') {
+      requireMethod(req, ['POST']);
+      const services = ready(deps);
+      const body = await readJsonBody(req);
+      if (!isRecord(body) || typeof body.taskId !== 'string' || body.taskId.trim().length === 0) {
+        throw new HttpError(400, 'INVALID_BODY', 'taskId 必须是非空字符串');
+      }
+      if (body.all !== undefined && typeof body.all !== 'boolean') {
+        throw new HttpError(400, 'INVALID_BODY', 'all 必须是布尔值');
+      }
+      const readIds = (value: unknown, field: string): string[] => {
+        if (value === undefined) return [];
+        if (!Array.isArray(value) || value.length > 500) {
+          throw new HttpError(400, 'INVALID_BODY', `${field} 必须是最多 500 个字符串的数组`);
+        }
+        const ids: string[] = [];
+        for (const entry of value) {
+          if (typeof entry !== 'string' || entry.trim().length === 0) {
+            throw new HttpError(400, 'INVALID_BODY', `${field} 必须是非空字符串数组`);
+          }
+          const id = entry.trim();
+          if (!ids.includes(id)) ids.push(id);
+        }
+        return ids;
+      };
+      const itemIds = readIds(body.itemIds, 'itemIds');
+      const frameIds = readIds(body.frameIds, 'frameIds');
+      if (body.all !== true && itemIds.length === 0 && frameIds.length === 0) {
+        throw new HttpError(400, 'INVALID_BODY', '需要 itemIds、frameIds 或 all=true');
+      }
+      let result;
+      try {
+        result = retryTaskFailures(services.db, services.dataDir, body.taskId.trim(), {
+          itemIds,
+          frameIds,
+          all: body.all === true,
+        });
+      } catch (error) {
+        if (error instanceof RetryError) throw new HttpError(error.status, error.code, error.message);
+        throw error;
+      }
+      services.pipeline.kick();
+      const parts = [`已重试 ${result.items_retried.length} 个失败视频、${result.frames_retried.length} 个失败帧`];
+      if (result.skipped.length > 0) parts.push(`跳过 ${result.skipped.length} 项`);
+      sendJson(res, 200, { status: 'OK', message: parts.join('；'), data: result });
       return;
     }
     if (pathname === '/api/local-frames/export') {

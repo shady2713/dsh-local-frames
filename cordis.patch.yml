@@ -1,6 +1,6 @@
 # Mount the local-frames plugin in a DSH profile that installs this package.
 # Configuration (dataDir) is optional; all user-editable settings live in the
-# plugin's own SQLite database and are edited on its two settings pages.
+# plugin's own SQLite database and are edited on its single page.
 - insert:
     - id: local-frames
       name: dsh-local-frames

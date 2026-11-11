@@ -288,6 +288,16 @@ window.__ModuleLoader__.load({
           })
           .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
       };
+      const retryFailed = (taskId, payload) => {
+        setMessage('');
+        setError('');
+        request('/api/local-frames/retry', { taskId, ...payload })
+          .then((response) => {
+            setMessage(response.message || '已重试');
+            reload();
+          })
+          .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      };
       return h(
         'div',
         { className: 'lf-root' },
@@ -618,12 +628,32 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'lf-card' },
             h('h3', null, 'ERROR 文件'),
+            h(
+              'div',
+              { className: 'lf-row' },
+              h('button', { className: 'lf-button', type: 'button', disabled: task === null || task === undefined, onClick: () => retryFailed(task.task_id, { all: true }) }, '重试全部失败项'),
+            ),
             (status?.errors ?? []).length === 0
               ? Paragraph('没有错误文件')
               : h(
                   'ul',
                   null,
-                  status.errors.map((item) => h('li', { key: item.item_id }, `${item.local_path} · ${item.error_code || ''}`)),
+                  status.errors.map((item) =>
+                    h(
+                      'li',
+                      { key: item.item_id },
+                      `${item.local_path} · ${item.error_code || ''} `,
+                      h(
+                        'button',
+                        {
+                          className: 'lf-button',
+                          type: 'button',
+                          onClick: () => retryFailed(task.task_id, { itemIds: [item.item_id] }),
+                        },
+                        '重试',
+                      ),
+                    ),
+                  ),
                 ),
             Array.isArray(task?.progress?.csvErrors) && task.progress.csvErrors.length > 0
               ? h(
@@ -637,6 +667,54 @@ window.__ModuleLoader__.load({
                   ),
                 )
               : null,
+          ),
+          h(
+            'div',
+            { className: 'lf-card' },
+            h('h3', null, '失败帧'),
+            (status?.failedFrames ?? []).length === 0
+              ? Paragraph('没有失败帧')
+              : h(
+                  'div',
+                  null,
+                  h(
+                    'div',
+                    { className: 'lf-row' },
+                    h(
+                      'button',
+                      {
+                        className: 'lf-button',
+                        type: 'button',
+                        onClick: () =>
+                          retryFailed(task.task_id, {
+                            frameIds: (status.failedFrames ?? []).map((frame) => frame.frame_id),
+                          }),
+                      },
+                      '批量重试失败帧',
+                    ),
+                  ),
+                  h(
+                    'ul',
+                    null,
+                    (status.failedFrames ?? []).map((frame) =>
+                      h(
+                        'li',
+                        { key: frame.frame_id },
+                        `${frame.title || frame.local_path} · ${frame.t_ms} ms · ${frame.error || ''} `,
+                        h(
+                          'button',
+                          {
+                            className: 'lf-button',
+                            type: 'button',
+                            onClick: () => retryFailed(task.task_id, { frameIds: [frame.frame_id] }),
+                          },
+                          '重试',
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            Paragraph('重试只重新处理失败的时间点或视频，已完成的帧与标签保留；原视频只读。'),
           ),
         ),
         h(
@@ -678,18 +756,33 @@ window.__ModuleLoader__.load({
                         h(
                           'td',
                           null,
-                          entry.status === 'DONE'
-                            ? h(
-                                'button',
-                                {
-                                  className: 'lf-button',
-                                  type: 'button',
-                                  disabled: exporting,
-                                  onClick: () => exportFromList(entry.task_id),
-                                },
-                                exporting ? '导出中…' : '导出',
-                              )
-                            : null,
+                          h(
+                            'div',
+                            { className: 'lf-row' },
+                            entry.status === 'DONE'
+                              ? h(
+                                  'button',
+                                  {
+                                    className: 'lf-button',
+                                    type: 'button',
+                                    disabled: exporting,
+                                    onClick: () => exportFromList(entry.task_id),
+                                  },
+                                  exporting ? '导出中…' : '导出',
+                                )
+                              : null,
+                            failures > 0 && entry.status !== 'CANCELLED'
+                              ? h(
+                                  'button',
+                                  {
+                                    className: 'lf-button',
+                                    type: 'button',
+                                    onClick: () => retryFailed(entry.task_id, { all: true }),
+                                  },
+                                  '重试失败项',
+                                )
+                              : null,
+                          ),
                         ),
                       );
                     }),
@@ -717,9 +810,7 @@ window.__ModuleLoader__.load({
                   onChange: (event) => setExportTaskId(event.target.value === '' ? null : event.target.value),
                 },
                 h('option', { value: '' }, task === null || task === undefined ? '当前任务（无）' : `当前任务（${task.task_id}）`),
-                tasks
-                  .filter((entry) => entry.task_id !== task?.task_id)
-                  .map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${entry.status}`)),
+                tasks.map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${entry.status}`)),
               ),
             ),
             exportTargets.length === 0

@@ -127,6 +127,25 @@ export interface TaskSummary {
   targets: TaskTargetRef[];
 }
 
+/** One failed frame shown in the progress area for manual retry. */
+export interface StatusFailedFrame {
+  frame_id: string;
+  item_id: string;
+  local_path: string;
+  title: string;
+  t_ms: number;
+  error: string | null;
+}
+
+/** Result of `POST /api/local-frames/retry`. */
+export interface RetryResult {
+  task_id: string;
+  task_status: string;
+  items_retried: string[];
+  frames_retried: string[];
+  skipped: Array<{ id: string; kind: 'item' | 'frame'; reason: string }>;
+}
+
 export interface StatusItem {
   position: number;
   item_id: string;
@@ -158,6 +177,7 @@ export interface StatusSnapshot {
   funnel: FunnelStats;
   items: StatusItem[];
   errors: Array<{ item_id: string; local_path: string; error_code: string | null }>;
+  failedFrames: StatusFailedFrame[];
   pause: { code: string | null; reason: string | null } | null;
   dataDir: {
     path: string;
