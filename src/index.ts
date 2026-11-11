@@ -1,6 +1,7 @@
 import { join, resolve } from 'node:path';
 import Schema from '@deepseek-ai/schemastery';
 import { openDatabase } from './db.js';
+import { openHostDirectory } from './open.js';
 import { createFfmpegMedia } from './media.js';
 import { clearTmp, Pipeline } from './pipeline.js';
 import { createRoutes } from './routes.js';
@@ -196,6 +197,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
           pipeline,
           listModels: () => vision.listImageModels(),
           recheckEnvironment: () => environment.check(true),
+          openPath: (directory) => openHostDirectory(ctx.subprocess, directory),
         }),
       });
       return () => {

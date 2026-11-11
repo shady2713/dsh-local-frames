@@ -1,10 +1,13 @@
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db.js';
+import { exportTask } from '../src/export.js';
 import type { Pipeline } from '../src/pipeline.js';
 import { createRoutes } from '../src/routes.js';
 import { SettingsStore } from '../src/settings.js';
 import type { StatusSnapshot } from '../src/types.js';
+import { seedExportTask } from './export-helpers.js';
 import { makeTempDir, mockRequest, mockResponse, writeFixtureFile } from './helpers.js';
 
 const snapshot = {
@@ -18,6 +21,7 @@ const snapshot = {
     exportDir: null,
     lastImportPath: null,
     allowRoots: [],
+    recentExports: [],
   },
   targets: [],
   task: null,
@@ -36,6 +40,7 @@ function routes(): ReturnType<typeof createRoutes> {
 function persistedRoutes(): {
   db: ReturnType<typeof openDatabase>;
   settings: SettingsStore;
+  dataDir: string;
   routes: ReturnType<typeof createRoutes>;
 } {
   const dataDir = makeTempDir('lf-routes-data-');
@@ -50,7 +55,7 @@ function persistedRoutes(): {
     dataDir,
     pipeline,
   });
-  return { db, settings, routes: persistent };
+  return { db, settings, dataDir, routes: persistent };
 }
 
 async function postJson(routesToCall: ReturnType<typeof createRoutes>, url: string, body: unknown) {
@@ -178,6 +183,99 @@ describe('path settings persistence', () => {
       const saved = await postJson(h.routes, '/api/local-frames/settings', { exportDir });
       expect(saved.status).toBe(200);
       expect(new SettingsStore(h.db).load().exportDir).toBe(exportDir);
+    } finally {
+      h.db.close();
+    }
+  });
+
+  it('exports only selected objects through the page route and records the run', async () => {
+    const h = persistedRoutes();
+    try {
+      const seeded = seedExportTask(h.db, h.dataDir);
+      const exported = await postJson(h.routes, '/api/local-frames/export', {
+        taskId: seeded.taskId,
+        targetIds: [seeded.targetB],
+        byObject: true,
+      });
+      expect(exported.status).toBe(200);
+      const data = (
+        exported.json() as {
+          data: {
+            images: number;
+            directory: string;
+            targetNames: string[];
+            recentExports: Array<{ directory: string; target_names: string[] }>;
+          };
+        }
+      ).data;
+      expect(data.images).toBe(2);
+      expect(data.targetNames).toEqual(['object-b']);
+      expect(data.recentExports).toHaveLength(1);
+      expect(data.recentExports[0]?.directory).toBe(data.directory);
+      expect(new SettingsStore(h.db).load().recentExports[0]?.target_names).toEqual(['object-b']);
+      const labels = readFileSync(join(data.directory, 'labels.csv'), 'utf8');
+      expect(labels.split('\n')[0]).toBe('file_name,split,family_id,object-b');
+
+      const invalid = await postJson(h.routes, '/api/local-frames/export', {
+        taskId: seeded.taskId,
+        targetIds: ['not-in-task'],
+      });
+      expect(invalid.status).toBe(400);
+      expect(invalid.json()).toMatchObject({ code: 'INVALID_TARGETS' });
+    } finally {
+      h.db.close();
+    }
+  });
+
+  it('opens export artifacts through the host opener and reports failures', async () => {
+    const h = persistedRoutes();
+    try {
+      const seeded = seedExportTask(h.db, h.dataDir);
+      const exported = exportTask(h.db, h.dataDir, seeded.taskId);
+      const zip = exportTask(h.db, h.dataDir, seeded.taskId, new Date(), null, { zip: true });
+      const opened: string[] = [];
+      const withOpener = createRoutes({
+        buildStatus: async () => snapshot as StatusSnapshot,
+        log: () => undefined,
+        db: h.db,
+        settings: h.settings,
+        dataDir: h.dataDir,
+        pipeline: { kick: () => undefined } as unknown as Pipeline,
+        openPath: async (directory) => {
+          opened.push(directory);
+        },
+      });
+      const directoryResult = await postJson(withOpener, '/api/local-frames/export/open', { path: exported.directory });
+      expect(directoryResult.status).toBe(200);
+      expect(opened).toEqual([exported.directory]);
+      const zipResult = await postJson(withOpener, '/api/local-frames/export/open', { path: zip.directory });
+      expect(zipResult.status).toBe(200);
+      expect(opened[1]).toBe(dirname(zip.directory));
+
+      const outside = await postJson(withOpener, '/api/local-frames/export/open', {
+        path: makeTempDir('lf-routes-outside-'),
+      });
+      expect(outside.status).toBe(403);
+
+      const missing = await postJson(withOpener, '/api/local-frames/export/open', {
+        path: join(h.dataDir, 'exports', '2020-01-01_000000'),
+      });
+      expect(missing.status).toBe(404);
+
+      const failing = createRoutes({
+        buildStatus: async () => snapshot as StatusSnapshot,
+        log: () => undefined,
+        db: h.db,
+        settings: h.settings,
+        dataDir: h.dataDir,
+        pipeline: { kick: () => undefined } as unknown as Pipeline,
+        openPath: async () => {
+          throw new Error('没有可用的文件管理器');
+        },
+      });
+      const failed = await postJson(failing, '/api/local-frames/export/open', { path: exported.directory });
+      expect(failed.status).toBe(409);
+      expect(failed.json()).toMatchObject({ code: 'OPEN_FAILED', message: '没有可用的文件管理器' });
     } finally {
       h.db.close();
     }

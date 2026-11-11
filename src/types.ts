@@ -9,6 +9,21 @@ export interface ModelChoice {
   model: string;
 }
 
+/** One completed export, newest first in {@link Settings.recentExports}. */
+export interface RecentExport {
+  /** UTC ISO timestamp of the export. */
+  exported_at: string;
+  task_id: string;
+  target_ids: string[];
+  target_names: string[];
+  images: number;
+  train: number;
+  val: number;
+  /** Export directory, or the zip file path when `zip` is true. */
+  directory: string;
+  zip: boolean;
+}
+
 /** User-editable settings stored in the plugin's own `settings` table. No secrets. */
 export interface Settings {
   model: ModelChoice | null;
@@ -22,6 +37,8 @@ export interface Settings {
   /** Last absolute path submitted on the progress page; refilled when it reopens. */
   lastImportPath: string | null;
   allowRoots: string[];
+  /** Most recent successful exports, newest first; capped and derived, not user input. */
+  recentExports: RecentExport[];
 }
 
 export type TaskStatus = 'RUNNING' | 'PAUSED' | 'DONE' | 'CANCELLED';
@@ -106,6 +123,8 @@ export interface StatusSnapshot {
     task_id: string;
     status: string;
     progress: Record<string, unknown>;
+    /** Objects selected when the task was created; the export page lists these. */
+    target_ids: string[];
   } | null;
   funnel: {
     imported: number;

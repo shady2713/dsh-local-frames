@@ -2,7 +2,7 @@ import { directorySizeBytes, freeDiskGb } from './disk.js';
 import type { LocalFramesDatabase } from './db.js';
 import type { SettingsStore } from './settings.js';
 import type { EnvironmentChecker } from './versions.js';
-import { readProgress } from './progress.js';
+import { readProgress, readSpec } from './progress.js';
 import type { StatusSnapshot, TaskRow, TargetAliases } from './types.js';
 
 function parseJsonObject(text: string): Record<string, unknown> {
@@ -166,6 +166,7 @@ export async function buildStatus(options: {
             task_id: task.task_id,
             status: task.status,
             progress: parseJsonObject(task.progress_json),
+            target_ids: readSpec(task.spec_json).targetIds,
           },
     funnel: funnelFor(db, task?.task_id ?? null),
     items: itemsFor(db, task?.task_id ?? null),
