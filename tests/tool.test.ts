@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { openDatabase, type LocalFramesDatabase } from '../src/db.js';
 import type { MediaClient } from '../src/media.js';
 import { Pipeline } from '../src/pipeline.js';
@@ -12,6 +12,12 @@ import type { ToolResult } from '../src/types.js';
 import { EnvironmentChecker } from '../src/versions.js';
 import type { VisionClient } from '../src/vision.js';
 import { fakeExec, healthySubprocess, makeTempDir, writeFixtureFile } from './helpers.js';
+
+// Unit fixtures live under the OS temp dir; keep tool preconditions independent of the host's free disk.
+vi.mock('../src/disk.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/disk.js')>();
+  return { ...actual, freeDiskGb: () => 100 };
+});
 
 interface Harness {
   dataDir: string;
