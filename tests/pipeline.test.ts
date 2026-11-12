@@ -6,7 +6,8 @@ import { openDatabase } from '../src/db.js';
 import { dhashFromGray, hammingHex } from '../src/dhash.js';
 import { exportTask, splitForFamily } from '../src/export.js';
 import { createFfmpegMedia, type MediaClient } from '../src/media.js';
-import { Pipeline } from '../src/pipeline.js';
+import { controlTask, Pipeline } from '../src/pipeline.js';
+import { retryTaskFailures } from '../src/retry.js';
 import { SettingsStore } from '../src/settings.js';
 import { createTools } from '../src/tool.js';
 import { buildStatus } from '../src/status.js';
@@ -607,6 +608,110 @@ describe('parallel vision calls', () => {
       expect(calls).toBe(3);
       const judged = db.raw.prepare("SELECT COUNT(*) AS count FROM frames WHERE state = 'JUDGED'").get() as { count?: number };
       expect(judged.count).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('caps one frame at five automatic attempts across batch boundaries and restarts, then a manual retry recovers it', async () => {
+    const dataDir = makeTempDir('lf-retry-cap-');
+    const db = openDatabase(dataDir);
+    const settings = new SettingsStore(db);
+    settings.update({ model: { provider: 'example', model: 'vision' }, visionConcurrency: 1, budgetPerTask: 3 });
+    seedJudgingTask(db, dataDir, 1);
+    let visionCalls = 0;
+    let failing = true;
+    const vision: VisionClient = {
+      available: () => true,
+      listImageModels: async () => [],
+      judge: async () => {
+        visionCalls += 1;
+        if (failing) return { ok: false, kind: 'retryable', message: 'HTTP 404', retryAfterMs: 1 };
+        return judgeAll([{ name: 'object-a' }]);
+      },
+    };
+    const media: MediaClient = {
+      probeDuration: async () => ({ ok: true, duration: 2 }),
+      extractFrame: async (_file, _seconds, dest) => {
+        writeFixtureFile(dest, 'jpeg-bytes');
+        return { ok: true };
+      },
+      decodeGray: async () => {
+        const pixels = new Uint8Array(32 * 32);
+        for (let index = 0; index < pixels.length; index += 1) pixels[index] = index % 251;
+        return { ok: true, raster: { width: 32, height: 32, pixels } };
+      },
+      shrinkJpeg: async () => ({ ok: true }),
+    };
+    const makePipeline = () =>
+      new Pipeline({ db, settings, dataDir, media, vision, sleep: async () => undefined, minFreeGb: 0 });
+    try {
+      const first = makePipeline();
+      await first.runUntilIdle();
+      let task = db.raw.prepare('SELECT status, progress_json FROM tasks WHERE task_id = ?').get('task') as {
+        status: string;
+        progress_json: string;
+      };
+      expect(task.status).toBe('PAUSED');
+      expect(task.progress_json).toContain('BUDGET');
+      let calls = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
+      expect(calls.count).toBe(3);
+      expect(visionCalls).toBe(3);
+      let frame = db.raw.prepare("SELECT state, path FROM frames WHERE frame_id = 'frame-0'").get() as {
+        state?: string;
+        path?: string | null;
+        error?: string | null;
+      };
+      expect(frame.state).toBe('PENDING');
+
+      // A second process/batch must continue from the persisted count, not restart at zero.
+      settings.update({ budgetPerTask: 7 });
+      expect(controlTask(db, dataDir, 'task', 'resume').ok).toBe(true);
+      const second = makePipeline();
+      await second.runUntilIdle();
+      task = db.raw.prepare('SELECT status, progress_json FROM tasks WHERE task_id = ?').get('task') as {
+        status: string;
+        progress_json: string;
+      };
+      expect(task.status).toBe('DONE');
+      expect(visionCalls).toBe(5);
+      calls = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
+      expect(calls.count).toBe(5);
+      frame = db.raw.prepare("SELECT state, path, error FROM frames WHERE frame_id = 'frame-0'").get() as {
+        state?: string;
+        path?: string | null;
+        error?: string | null;
+      };
+      expect(frame.state).toBe('FAILED');
+      expect(frame.path).toBeNull();
+      expect(frame.error).toContain('累计 5 次');
+
+      // A finished task is not selected again, so the capped frame stays at five calls.
+      await second.runUntilIdle();
+      expect(visionCalls).toBe(5);
+
+      // The existing manual retry entry drops the failed frame and its calls; the
+      // re-extracted frame gets a fresh batch and can succeed.
+      const retried = retryTaskFailures(db, dataDir, 'task', { frameIds: ['frame-0'] });
+      expect(retried.frames_retried).toEqual(['frame-0']);
+      calls = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
+      expect(calls.count).toBe(0);
+      const item = db.raw.prepare("SELECT state FROM items WHERE item_id = 'item'").get() as { state?: string };
+      expect(item.state).toBe('PROBED');
+
+      failing = false;
+      await makePipeline().runUntilIdle();
+      const finished = db.raw.prepare('SELECT status FROM tasks WHERE task_id = ?').get('task') as { status: string };
+      expect(finished.status).toBe('DONE');
+      expect(visionCalls).toBe(6);
+      const oldFrame = db.raw.prepare("SELECT state, path FROM frames WHERE frame_id = 'frame-0'").get();
+      expect(oldFrame).toBeUndefined();
+      const recovered = db.raw.prepare('SELECT frame_id, state FROM frames').all() as Array<{ frame_id: string; state: string }>;
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]?.frame_id).not.toBe('frame-0');
+      expect(recovered[0]?.state).toBe('JUDGED');
+      calls = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
+      expect(calls.count).toBe(1);
     } finally {
       db.close();
     }

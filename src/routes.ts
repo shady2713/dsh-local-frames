@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { realpathSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 import type { LocalFramesDatabase } from './db.js';
@@ -288,12 +288,34 @@ export function createRoutes(
       if (target !== root && !target.startsWith(`${root}${sep}`)) {
         throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
       }
-      let directory: string;
+      // A lexical prefix check is not enough: a symlink inside exportDir can
+      // resolve anywhere. Re-check the canonical paths and open the canonical
+      // result, so a link swapped after the check cannot change the target.
+      let canonical: string;
       try {
-        const stat = statSync(target);
-        directory = stat.isDirectory() ? target : dirname(target);
+        canonical = realpathSync(target);
       } catch {
         throw new HttpError(404, 'NOT_FOUND', '导出结果不存在');
+      }
+      let canonicalRoot: string;
+      try {
+        canonicalRoot = realpathSync(root);
+      } catch {
+        throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
+      }
+      const insideRoot = (path: string): boolean => path === canonicalRoot || path.startsWith(`${canonicalRoot}${sep}`);
+      if (!insideRoot(canonical)) {
+        throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
+      }
+      let directory: string;
+      try {
+        const stat = statSync(canonical);
+        directory = stat.isDirectory() ? canonical : dirname(canonical);
+      } catch {
+        throw new HttpError(404, 'NOT_FOUND', '导出结果不存在');
+      }
+      if (!insideRoot(directory)) {
+        throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
       }
       if (deps.openPath === undefined) throw new HttpError(500, 'NOT_READY', '当前环境无法打开目录');
       try {

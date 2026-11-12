@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db.js';
@@ -277,6 +277,72 @@ describe('path settings persistence', () => {
       const failed = await postJson(failing, '/api/local-frames/export/open', { path: exported.directory });
       expect(failed.status).toBe(409);
       expect(failed.json()).toMatchObject({ code: 'OPEN_FAILED', message: '没有可用的文件管理器' });
+    } finally {
+      h.db.close();
+    }
+  });
+
+  it('rejects symlinks and lexical escapes out of the export directory but opens real export paths', async () => {
+    const h = persistedRoutes();
+    try {
+      const parent = makeTempDir('lf-routes-open-parent-');
+      const exportDir = join(parent, 'exports');
+      const outside = join(parent, 'outside');
+      mkdirSync(join(exportDir, 'job'), { recursive: true });
+      mkdirSync(outside, { recursive: true });
+      const innerDir = join(exportDir, 'job');
+      const innerFile = writeFixtureFile(join(innerDir, 'labels.csv'), 'a,b');
+      mkdirSync(join(exportDir, 'real-sub'), { recursive: true });
+      const outsideFile = writeFixtureFile(join(outside, 'secret.txt'), 'secret');
+      symlinkSync(outside, join(exportDir, 'escape-dir'));
+      symlinkSync(outsideFile, join(exportDir, 'escape-file'));
+      symlinkSync(join(exportDir, 'real-sub'), join(exportDir, 'inner-link'));
+      const samePrefix = `${exportDir}-evil`;
+      writeFixtureFile(join(samePrefix, 'escape.txt'), 'escape');
+      h.settings.update({ exportDir });
+
+      const opened: string[] = [];
+      const withOpener = createRoutes({
+        buildStatus: async () => snapshot as StatusSnapshot,
+        log: () => undefined,
+        db: h.db,
+        settings: h.settings,
+        dataDir: h.dataDir,
+        pipeline: { kick: () => undefined } as unknown as Pipeline,
+        openPath: async (directory) => {
+          opened.push(directory);
+        },
+      });
+
+      const root = await postJson(withOpener, '/api/local-frames/export/open', { path: exportDir });
+      expect(root.status).toBe(200);
+      const dir = await postJson(withOpener, '/api/local-frames/export/open', { path: innerDir });
+      expect(dir.status).toBe(200);
+      const file = await postJson(withOpener, '/api/local-frames/export/open', { path: innerFile });
+      expect(file.status).toBe(200);
+      const innerLink = await postJson(withOpener, '/api/local-frames/export/open', { path: join(exportDir, 'inner-link') });
+      expect(innerLink.status).toBe(200);
+      expect(opened).toEqual([exportDir, innerDir, innerDir, join(exportDir, 'real-sub')]);
+
+      for (const path of [
+        join(exportDir, 'escape-dir'),
+        join(exportDir, 'escape-file'),
+        outside,
+        `${exportDir}/../outside`,
+        samePrefix,
+        join(samePrefix, 'escape.txt'),
+      ]) {
+        const rejected = await postJson(withOpener, '/api/local-frames/export/open', { path });
+        expect(rejected.status).toBe(403);
+        expect(rejected.json()).toMatchObject({ status: 'ERROR', code: 'FORBIDDEN_PATH' });
+      }
+      expect(opened).toHaveLength(4);
+
+      const missing = await postJson(withOpener, '/api/local-frames/export/open', {
+        path: join(exportDir, 'missing', 'result'),
+      });
+      expect(missing.status).toBe(404);
+      expect(missing.json()).toMatchObject({ code: 'NOT_FOUND' });
     } finally {
       h.db.close();
     }

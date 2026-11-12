@@ -6,7 +6,7 @@ import { dhashFromGray, frameCount, frameTimestampsMs, hammingHex, DHASH_DISTANC
 import { DEFAULT_MIN_FREE_DISK_GB, directorySizeBytes, freeDiskGb } from './disk.js';
 import { durationFromProbe, withDuration } from './ingest.js';
 import { newId, nowIso } from './ids.js';
-import { judgeBatch, TaskPause, TaskStopped, type JudgeAttempt } from './judge.js';
+import { judgeBatch, MAX_ATTEMPTS_PER_FRAME, TaskPause, TaskStopped, type JudgeAttempt } from './judge.js';
 import { readJpegInfo, type MediaClient } from './media.js';
 import { outcomeFor, type PromptObject } from './prompt.js';
 import {
@@ -445,6 +445,14 @@ export class Pipeline {
     if (failed !== undefined) throw failed.reason;
   }
 
+  /** Automatic attempts already recorded for one frame, across batches and restarts. */
+  private frameCallCount(frameId: string): number {
+    const row = this.deps.db.raw.prepare('SELECT COUNT(*) AS count FROM calls WHERE frame_id = ?').get(frameId) as
+      | { count?: number }
+      | undefined;
+    return typeof row?.count === 'number' ? row.count : 0;
+  }
+
   private async judgeFrame(
     task: TaskRecord,
     frame: { frame_id: string; path: string },
@@ -453,6 +461,16 @@ export class Pipeline {
     model: string,
     modelName: string,
   ): Promise<void> {
+    // The per-frame cap is persisted in `calls`, so a batch that runs out of
+    // budget or a process restart cannot hand the same frame a fresh five
+    // attempts. A manual retry drops the frame row (and its calls), which is
+    // what makes a manual retry count as a new batch.
+    const used = this.frameCallCount(frame.frame_id);
+    const remaining = MAX_ATTEMPTS_PER_FRAME - used;
+    if (remaining <= 0) {
+      this.failCallFrame(frame.frame_id, frame.path, `模型调用尝试次数已用尽（${MAX_ATTEMPTS_PER_FRAME} 次）`);
+      return;
+    }
     // Every attempt reserves a budget slot until its row is written, so parallel
     // frames cannot jointly start more calls than the task budget allows.
     let pendingReservations = 0;
@@ -465,6 +483,7 @@ export class Pipeline {
         imagePath: frame.path,
         taskId: task.task_id,
         sleep: (ms) => this.sleep(ms),
+        maxAttempts: remaining,
         beforeCall: () => {
           this.assertCapacity(task.task_id);
           this.reserveBudget(task.task_id);
@@ -481,6 +500,10 @@ export class Pipeline {
         if (result.reason === 'format') {
           this.failModelFrame(task.task_id, frame.frame_id, frame.path, result.message);
         } else {
+          const total = this.frameCallCount(frame.frame_id);
+          if (total >= MAX_ATTEMPTS_PER_FRAME) {
+            this.failCallFrame(frame.frame_id, frame.path, `模型调用失败（累计 ${total} 次）：${result.message}`);
+          }
           this.noteCallStreak(task.task_id);
         }
         return;
@@ -566,6 +589,18 @@ export class Pipeline {
       }
     });
     if (pause !== null) throw pause;
+  }
+
+  /**
+   * A frame that used every automatic attempt is failed instead of staying
+   * PENDING, so the next scheduler pass cannot select it again. The existing
+   * manual retry route drops this row and re-extracts the timestamp.
+   */
+  private failCallFrame(frameId: string, framePath: string, message: string): void {
+    removeOwnedFrame(this.deps.dataDir, framePath);
+    this.deps.db.raw
+      .prepare("UPDATE frames SET state = 'FAILED', path = NULL, error = ?, updated_at = ? WHERE frame_id = ?")
+      .run(message, nowIso(this.now()), frameId);
   }
 
   private failModelFrame(taskId: string, frameId: string, framePath: string, message: string): void {
