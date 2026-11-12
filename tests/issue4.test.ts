@@ -170,10 +170,12 @@ function insertFrame(
     .run(options.frameId, options.itemId, options.tMs, options.path ?? null, options.state, options.error ?? null, AT, AT);
 }
 
-function insertCall(db: LocalFramesDatabase, frameId: string, callId: string, ok = 1): void {
+function insertCall(db: LocalFramesDatabase, taskId: string, frameId: string, callId: string, ok = 1): void {
   db.raw
-    .prepare('INSERT INTO calls (call_id, frame_id, model, ms, tokens, ok, error, created_at) VALUES (?, ?, ?, 1, 1, ?, NULL, ?)')
-    .run(callId, frameId, 'example/vision', ok, AT);
+    .prepare(
+      'INSERT INTO calls (call_id, task_id, frame_id, model, ms, tokens, ok, error, created_at) VALUES (?, ?, ?, ?, 1, 1, ?, NULL, ?)',
+    )
+    .run(callId, taskId, frameId, 'example/vision', ok, AT);
 }
 
 function insertLabel(db: LocalFramesDatabase, frameId: string, targetId: string): void {
@@ -383,9 +385,9 @@ describe('manual retry route', () => {
     insertItem(h.db, { itemId: 'item-done', taskId: 'task-retry', state: 'DONE', probe: { duration: 5 } });
     insertFrame(h.db, { frameId: 'frame-a', itemId: 'item-a', tMs: 0, state: 'FAILED', error: '取帧失败：测试' });
     insertFrame(h.db, { frameId: 'frame-b', itemId: 'item-b', tMs: 0, state: 'FAILED', error: '模型输出不合法：测试' });
-    insertCall(h.db, 'frame-b', 'call-b', 0);
+    insertCall(h.db, 'task-retry', 'frame-b', 'call-b', 0);
     insertFrame(h.db, { frameId: 'frame-kept', itemId: 'item-done', tMs: 0, state: 'JUDGED' });
-    insertCall(h.db, 'frame-kept', 'call-kept');
+    insertCall(h.db, 'task-retry', 'frame-kept', 'call-kept');
     insertLabel(h.db, 'frame-kept', targetId);
     return {
       itemA: 'item-a',
@@ -421,8 +423,9 @@ describe('manual retry route', () => {
       expect((singleFrame.json() as { data: { frames_retried: string[] } }).data.frames_retried).toEqual([ids.frameB]);
       expect(h.db.raw.prepare('SELECT state FROM items WHERE item_id = ?').get(ids.itemB)).toMatchObject({ state: 'NEW' });
       expect(h.db.raw.prepare('SELECT 1 FROM frames WHERE frame_id = ?').get(ids.frameB)).toBeUndefined();
+      // Calls are history: retrying the frame keeps its spent budget/call stats.
       expect(h.db.raw.prepare('SELECT COUNT(*) AS count FROM calls WHERE frame_id = ?').get(ids.frameB)).toMatchObject({
-        count: 0,
+        count: 1,
       });
       expect(h.db.raw.prepare('SELECT COUNT(*) AS count FROM labels WHERE frame_id = ?').get(ids.keptFrame)).toMatchObject({
         count: 1,

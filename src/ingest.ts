@@ -154,16 +154,16 @@ interface FrameFile {
 }
 
 /**
- * Explicit force rerun of one existing row: drop its frames/labels/calls and
- * reset the item to NEW. Only plugin-owned frame files are removed; the user's
- * original video is never touched.
+ * Explicit force rerun of one existing row: drop its frames and labels, reset
+ * the item to NEW, and keep historical calls for the task budget/statistics.
+ * Only plugin-owned frame files are removed; the user's original video is
+ * never touched.
  */
 function resetItemForRerun(db: LocalFramesDatabase, dataDir: string, itemId: string): FrameFile[] {
   const frames = db.raw.prepare('SELECT frame_id, path FROM frames WHERE item_id = ?').all(itemId) as unknown as FrameFile[];
   db.raw.exec('BEGIN IMMEDIATE');
   try {
     for (const frame of frames) {
-      db.raw.prepare('DELETE FROM calls WHERE frame_id = ?').run(frame.frame_id);
       db.raw.prepare('DELETE FROM labels WHERE frame_id = ?').run(frame.frame_id);
     }
     db.raw.prepare('DELETE FROM frames WHERE item_id = ?').run(itemId);

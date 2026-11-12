@@ -323,11 +323,13 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
           { force },
         );
       } catch (error) {
+        deps.db.raw.prepare('DELETE FROM calls WHERE task_id = ?').run(taskId);
         deps.db.raw.prepare('DELETE FROM items WHERE task_id = ?').run(taskId);
         deps.db.raw.prepare('DELETE FROM tasks WHERE task_id = ?').run(taskId);
         return fail(`lf_collect_start 失败：${errorText(error)}`);
       }
       if (acceptedCount(report) === 0) {
+        deps.db.raw.prepare('DELETE FROM calls WHERE task_id = ?').run(taskId);
         deps.db.raw.prepare('DELETE FROM tasks WHERE task_id = ?').run(taskId);
         const detail = report.rejected[0]?.message ?? report.existing[0]?.localPath ?? '没有可用的视频';
         return fail(report.existing.length > 0 ? `已存在：${detail}` : detail, {

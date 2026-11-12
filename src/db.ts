@@ -2,8 +2,27 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-/** Bump only together with a migration in {@link SCHEMA_SQL}. */
-export const SCHEMA_VERSION = 1;
+/** Bump only together with a migration in {@link migrateCallsToV2}. */
+export const SCHEMA_VERSION = 2;
+
+/**
+ * Version 2 keeps every model call for a task even after its frame row is
+ * replaced by a manual retry or force rerun. `task_id` is the stable owner;
+ * `frame_id` is deliberately not a foreign key so dropped frames do not drag
+ * historical calls (and their budget/statistics) with them.
+ */
+const CALLS_SQL = `
+CREATE TABLE IF NOT EXISTS calls (
+  call_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
+  frame_id TEXT NOT NULL,
+  model TEXT NOT NULL,
+  ms INTEGER NOT NULL,
+  tokens INTEGER,
+  ok INTEGER NOT NULL,
+  error TEXT,
+  created_at TEXT NOT NULL
+);`;
 
 /**
  * The full schema, applied as one script to a new database. Exactly seven
@@ -84,16 +103,7 @@ CREATE TABLE IF NOT EXISTS labels (
   PRIMARY KEY (frame_id, target_id)
 );
 
-CREATE TABLE IF NOT EXISTS calls (
-  call_id TEXT PRIMARY KEY,
-  frame_id TEXT NOT NULL REFERENCES frames(frame_id),
-  model TEXT NOT NULL,
-  ms INTEGER NOT NULL,
-  tokens INTEGER,
-  ok INTEGER NOT NULL,
-  error TEXT,
-  created_at TEXT NOT NULL
-);
+${CALLS_SQL}
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_active_name ON targets(name) WHERE archived = 0;
 CREATE INDEX IF NOT EXISTS idx_items_task_state ON items(task_id, state);
@@ -103,6 +113,7 @@ CREATE INDEX IF NOT EXISTS idx_frames_item_time ON frames(item_id, t_ms);
 CREATE INDEX IF NOT EXISTS idx_frames_dhash ON frames(dhash);
 CREATE INDEX IF NOT EXISTS idx_frames_duplicate ON frames(duplicate_of);
 CREATE INDEX IF NOT EXISTS idx_labels_frame ON labels(frame_id);
+CREATE INDEX IF NOT EXISTS idx_calls_task ON calls(task_id);
 CREATE INDEX IF NOT EXISTS idx_calls_frame ON calls(frame_id);
 CREATE INDEX IF NOT EXISTS idx_calls_ok ON calls(ok);
 `;
@@ -124,6 +135,41 @@ export function listUserTables(raw: DatabaseSync): string[] {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all() as Array<{ name: string }>;
   return rows.map((row) => row.name);
+}
+
+function countRows(raw: DatabaseSync, table: string): number {
+  const row = raw.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count?: number } | undefined;
+  return typeof row?.count === 'number' ? row.count : 0;
+}
+
+/**
+ * Upgrade a version-1 `calls` table in place: v1 pointed at a frame row and
+ * lost its history when retries deleted that frame. v2 owns the call by task,
+ * so the same rows keep counting toward the budget and the export statistics.
+ *
+ * Runs inside the caller's transaction. Rows whose frame/item no longer exist
+ * cannot be attributed to a task; the migration refuses (and rolls back) rather
+ * than silently dropping history.
+ */
+function migrateCallsToV2(raw: DatabaseSync): void {
+  const before = countRows(raw, 'calls');
+  raw.exec('ALTER TABLE calls RENAME TO calls_v1;');
+  raw.exec(CALLS_SQL);
+  raw.exec(`
+    INSERT INTO calls (call_id, task_id, frame_id, model, ms, tokens, ok, error, created_at)
+    SELECT calls_v1.call_id, items.task_id, calls_v1.frame_id, calls_v1.model,
+           calls_v1.ms, calls_v1.tokens, calls_v1.ok, calls_v1.error, calls_v1.created_at
+    FROM calls_v1
+    JOIN frames ON frames.frame_id = calls_v1.frame_id
+    JOIN items ON items.item_id = frames.item_id
+  `);
+  const after = countRows(raw, 'calls');
+  if (after !== before) {
+    throw new Error(
+      `local-frames: calls migration lost history (${before} -> ${after}); database left unchanged`,
+    );
+  }
+  raw.exec('DROP TABLE calls_v1;');
 }
 
 /**
@@ -151,6 +197,7 @@ export function openDatabase(dataDir: string): LocalFramesDatabase {
     if (version < SCHEMA_VERSION) {
       raw.exec('BEGIN IMMEDIATE;');
       try {
+        if (version === 1) migrateCallsToV2(raw);
         raw.exec(SCHEMA_SQL);
         raw.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
         raw.exec('COMMIT;');

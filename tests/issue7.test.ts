@@ -168,14 +168,7 @@ function framesFor(db: LocalFramesDatabase, taskId: string): number {
 }
 
 function callsFor(db: LocalFramesDatabase, taskId: string): number {
-  return scalar(
-    db,
-    `SELECT COUNT(*) AS count FROM calls
-     JOIN frames ON frames.frame_id = calls.frame_id
-     JOIN items ON items.item_id = frames.item_id
-     WHERE items.task_id = ?`,
-    taskId,
-  );
+  return scalar(db, 'SELECT COUNT(*) AS count FROM calls WHERE task_id = ?', taskId);
 }
 
 describe('issue #7: stable multi-video order and progress order', () => {

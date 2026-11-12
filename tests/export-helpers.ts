@@ -96,9 +96,9 @@ export function seedExportTask(db: LocalFramesDatabase, dataDir: string): Seeded
       .run(frameId, itemId, index * 1000, path, at, at);
     db.raw
       .prepare(
-        'INSERT INTO calls (call_id, frame_id, model, ms, tokens, ok, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)',
+        'INSERT INTO calls (call_id, task_id, frame_id, model, ms, tokens, ok, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
       )
-      .run(`call-${frameId}`, frameId, 'example/vision', 2, 4, at);
+      .run(`call-${frameId}`, taskId, frameId, 'example/vision', 2, 4, at);
   }
 
   const labels: Array<[string, string, string, string, string]> = [
