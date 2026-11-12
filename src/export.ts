@@ -482,18 +482,12 @@ export function exportTask(
     duplicates_skipped: duplicatesSkipped,
     model_calls: taskScalar(
       db,
-      `SELECT COUNT(*) AS count FROM calls
-       JOIN frames ON frames.frame_id = calls.frame_id
-       JOIN items ON items.item_id = frames.item_id
-       WHERE items.task_id = ?`,
+      'SELECT COUNT(*) AS count FROM calls WHERE task_id = ?',
       taskId,
     ),
     model_calls_ok: taskScalar(
       db,
-      `SELECT COUNT(*) AS count FROM calls
-       JOIN frames ON frames.frame_id = calls.frame_id
-       JOIN items ON items.item_id = frames.item_id
-       WHERE items.task_id = ? AND calls.ok = 1`,
+      'SELECT COUNT(*) AS count FROM calls WHERE task_id = ? AND calls.ok = 1',
       taskId,
     ),
     items: taskScalar(db, 'SELECT COUNT(*) AS count FROM items WHERE task_id = ?', taskId),

@@ -95,8 +95,10 @@ function otherActiveTask(db: LocalFramesDatabase, taskId: string): string | null
  * A retried video goes back to NEW/PROBED (depending on its stored probe) and
  * its FAILED frames are dropped so the same timestamps are extracted again. A
  * retried frame row is dropped; its video is also reset to PROBED so the state
- * machine re-extracts that timestamp and judges it again. Finished frames,
- * labels and the user's original videos are not touched.
+ * machine re-extracts that timestamp and judges it again. Calls are historical
+ * facts: they stay attached to the task so the budget and statistics keep
+ * counting the replaced batch. Finished frames, labels and the user's original
+ * videos are not touched.
  */
 export function retryTaskFailures(
   db: LocalFramesDatabase,
@@ -192,7 +194,7 @@ export function retryTaskFailures(
   db.raw.exec('BEGIN IMMEDIATE');
   try {
     for (const frame of framesToDelete) {
-      db.raw.prepare('DELETE FROM calls WHERE frame_id = ?').run(frame.frame_id);
+      // Calls stay: they are the task's spent budget and call statistics.
       db.raw.prepare('DELETE FROM labels WHERE frame_id = ?').run(frame.frame_id);
       db.raw.prepare('DELETE FROM frames WHERE frame_id = ?').run(frame.frame_id);
     }

@@ -216,14 +216,9 @@ export class Pipeline {
   }
 
   private callCount(taskId: string): number {
-    const row = this.deps.db.raw
-      .prepare(
-        `SELECT COUNT(*) AS count FROM calls
-         JOIN frames ON frames.frame_id = calls.frame_id
-         JOIN items ON items.item_id = frames.item_id
-         WHERE items.task_id = ?`,
-      )
-      .get(taskId) as { count?: number } | undefined;
+    const row = this.deps.db.raw.prepare('SELECT COUNT(*) AS count FROM calls WHERE task_id = ?').get(taskId) as
+      | { count?: number }
+      | undefined;
     return typeof row?.count === 'number' ? row.count : 0;
   }
 
@@ -463,8 +458,8 @@ export class Pipeline {
   ): Promise<void> {
     // The per-frame cap is persisted in `calls`, so a batch that runs out of
     // budget or a process restart cannot hand the same frame a fresh five
-    // attempts. A manual retry drops the frame row (and its calls), which is
-    // what makes a manual retry count as a new batch.
+    // attempts. A manual retry drops the frame row but keeps its calls; the
+    // re-extracted frame gets a new id and therefore a fresh batch.
     const used = this.frameCallCount(frame.frame_id);
     const remaining = MAX_ATTEMPTS_PER_FRAME - used;
     if (remaining <= 0) {
@@ -492,7 +487,7 @@ export class Pipeline {
         onAttempt: (attempt) => {
           pendingReservations = Math.max(0, pendingReservations - 1);
           this.releaseBudget(task.task_id);
-          this.insertCall(frame.frame_id, modelName, attempt);
+          this.insertCall(task.task_id, frame.frame_id, modelName, attempt);
         },
         credentialRetry: this.credentialRetry,
       });
@@ -554,13 +549,14 @@ export class Pipeline {
     return objects;
   }
 
-  private insertCall(frameId: string, model: string, attempt: JudgeAttempt): void {
+  private insertCall(taskId: string, frameId: string, model: string, attempt: JudgeAttempt): void {
     this.deps.db.raw
       .prepare(
-        'INSERT INTO calls (call_id, frame_id, model, ms, tokens, ok, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO calls (call_id, task_id, frame_id, model, ms, tokens, ok, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
       )
       .run(
         newId(),
+        taskId,
         frameId,
         model,
         attempt.ms,

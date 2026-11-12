@@ -14,7 +14,7 @@ describe('database schema', () => {
       expect(listUserTables(db.raw)).toEqual(EXPECTED_TABLES);
       const version = db.raw.prepare('PRAGMA user_version').get() as { user_version?: number };
       expect(version.user_version).toBe(SCHEMA_VERSION);
-      expect(SCHEMA_VERSION).toBe(1);
+      expect(SCHEMA_VERSION).toBe(2);
     } finally {
       db.close();
     }

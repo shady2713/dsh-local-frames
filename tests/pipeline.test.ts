@@ -690,12 +690,13 @@ describe('parallel vision calls', () => {
       await second.runUntilIdle();
       expect(visionCalls).toBe(5);
 
-      // The existing manual retry entry drops the failed frame and its calls; the
-      // re-extracted frame gets a fresh batch and can succeed.
+      // A manual retry drops the failed frame but keeps its calls: the spent
+      // budget and call statistics survive, while the re-extracted frame gets a
+      // fresh frame id and therefore a fresh five-attempt batch.
       const retried = retryTaskFailures(db, dataDir, 'task', { frameIds: ['frame-0'] });
       expect(retried.frames_retried).toEqual(['frame-0']);
       calls = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
-      expect(calls.count).toBe(0);
+      expect(calls.count).toBe(5);
       const item = db.raw.prepare("SELECT state FROM items WHERE item_id = 'item'").get() as { state?: string };
       expect(item.state).toBe('PROBED');
 
@@ -711,7 +712,7 @@ describe('parallel vision calls', () => {
       expect(recovered[0]?.frame_id).not.toBe('frame-0');
       expect(recovered[0]?.state).toBe('JUDGED');
       calls = db.raw.prepare('SELECT COUNT(*) AS count FROM calls').get() as { count?: number };
-      expect(calls.count).toBe(1);
+      expect(calls.count).toBe(6);
     } finally {
       db.close();
     }
