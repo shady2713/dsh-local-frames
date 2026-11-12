@@ -35,7 +35,7 @@ export type JudgeBatch =
 const FORMAT_WAITS_MS = [1000, 5000];
 /** §7.5: one model call is aborted after this long and treated as retryable. */
 export const VISION_CALL_TIMEOUT_MS = 120_000;
-/** §7.5: total attempts for one frame, including the first call. */
+/** §7.5: total attempts for one batch, including the first call. */
 export const MAX_ATTEMPTS_PER_FRAME = 5;
 const TRANSPORT_WAITS_MS = [1000, 5000, 10_000, 30_000];
 
@@ -49,10 +49,12 @@ function attemptFrom(result: VisionResult, error: string | null, ok: boolean): J
 }
 
 /**
- * One frame: one call containing every object, with bounded retries.
+ * One batch of objects: one call, with bounded retries. A frame with more
+ * objects than `objectsPerCall` is judged by several such batches, one at a
+ * time; this function itself never splits objects.
  * A missing-credential error after this process started waits 3 seconds and is
  * tried once more. Invalid credentials and an exhausted quota do not retry.
- * Timeouts and other retryable failures are retried until the frame has made
+ * Timeouts and other retryable failures are retried until the batch has made
  * `maxAttempts` calls in total, including the first one.
  */
 export async function judgeBatch(options: {

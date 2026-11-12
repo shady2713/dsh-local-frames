@@ -8,7 +8,7 @@ import { durationFromProbe, withDuration } from './ingest.js';
 import { newId, nowIso } from './ids.js';
 import { judgeBatch, MAX_ATTEMPTS_PER_FRAME, TaskPause, TaskStopped, type JudgeAttempt } from './judge.js';
 import { readJpegInfo, type MediaClient } from './media.js';
-import { outcomeFor, type PromptObject } from './prompt.js';
+import { outcomeFor, type ModelObject, type PromptObject } from './prompt.js';
 import {
   CALL_FAIL_LIMIT,
   MODEL_RETRY_MS,
@@ -434,7 +434,17 @@ export class Pipeline {
     if (frames.length === 0) return;
     const modelName = `${model.provider}/${model.model}`.slice(0, 200);
     const settled = await Promise.allSettled(
-      frames.map((frame) => this.judgeFrame(task, frame, targets, model.provider, model.model, modelName)),
+      frames.map((frame) =>
+        this.judgeFrame(
+          task,
+          frame,
+          targets,
+          settings.objectsPerCall,
+          model.provider,
+          model.model,
+          modelName,
+        ),
+      ),
     );
     const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
     if (failed !== undefined) throw failed.reason;
@@ -448,63 +458,85 @@ export class Pipeline {
     return typeof row?.count === 'number' ? row.count : 0;
   }
 
+  /**
+   * Judge one frame in serial batches of at most `objectsPerCall` objects.
+   *
+   * Every batch goes through {@link judgeBatch} with its own 120-second timeout
+   * and at most five attempts. The per-frame automatic-attempt limit is five per
+   * batch (`5 × ceil(objects / objectsPerCall)`), persisted in `calls`, so a
+   * restart cannot hand the same frame a fresh budget. A batch that exhausts its
+   * attempts fails the whole frame; labels are written once, only after every
+   * batch succeeded, so an unjudged object is never stored as ABSENT or blank.
+   */
   private async judgeFrame(
     task: TaskRecord,
     frame: { frame_id: string; path: string },
     targets: readonly PromptObject[],
+    objectsPerCall: number,
     provider: string,
     model: string,
     modelName: string,
   ): Promise<void> {
-    // The per-frame cap is persisted in `calls`, so a batch that runs out of
-    // budget or a process restart cannot hand the same frame a fresh five
-    // attempts. A manual retry drops the frame row but keeps its calls; the
-    // re-extracted frame gets a new id and therefore a fresh batch.
-    const used = this.frameCallCount(frame.frame_id);
-    const remaining = MAX_ATTEMPTS_PER_FRAME - used;
-    if (remaining <= 0) {
-      this.failCallFrame(frame.frame_id, frame.path, `模型调用尝试次数已用尽（${MAX_ATTEMPTS_PER_FRAME} 次）`);
-      return;
-    }
+    const batchSize = Math.max(1, objectsPerCall);
+    const batchCount = Math.max(1, Math.ceil(targets.length / batchSize));
+    const frameAttemptLimit = MAX_ATTEMPTS_PER_FRAME * batchCount;
     // Every attempt reserves a budget slot until its row is written, so parallel
     // frames cannot jointly start more calls than the task budget allows.
     let pendingReservations = 0;
+    const judged: ModelObject[] = [];
     try {
-      const result = await judgeBatch({
-        vision: this.deps.vision,
-        provider,
-        model,
-        objects: targets,
-        imagePath: frame.path,
-        taskId: task.task_id,
-        sleep: (ms) => this.sleep(ms),
-        maxAttempts: remaining,
-        beforeCall: () => {
-          this.assertCapacity(task.task_id);
-          this.reserveBudget(task.task_id);
-          pendingReservations += 1;
-        },
-        onAttempt: (attempt) => {
-          pendingReservations = Math.max(0, pendingReservations - 1);
-          this.releaseBudget(task.task_id);
-          this.insertCall(task.task_id, frame.frame_id, modelName, attempt);
-        },
-        credentialRetry: this.credentialRetry,
-      });
-      if (!result.ok) {
-        if (result.reason === 'format') {
-          this.failModelFrame(task.task_id, frame.frame_id, frame.path, result.message);
-        } else {
-          const total = this.frameCallCount(frame.frame_id);
-          if (total >= MAX_ATTEMPTS_PER_FRAME) {
-            this.failCallFrame(frame.frame_id, frame.path, `模型调用失败（累计 ${total} 次）：${result.message}`);
-          }
-          this.noteCallStreak(task.task_id);
+      for (let start = 0; start < targets.length; start += batchSize) {
+        const batch = targets.slice(start, start + batchSize);
+        // Re-read the persisted count before every batch: earlier batches of
+        // this frame may have spent attempts (including retries).
+        const used = this.frameCallCount(frame.frame_id);
+        const remaining = frameAttemptLimit - used;
+        if (remaining <= 0) {
+          this.failCallFrame(frame.frame_id, frame.path, `模型调用尝试次数已用尽（${frameAttemptLimit} 次）`);
+          return;
         }
-        return;
+        const result = await judgeBatch({
+          vision: this.deps.vision,
+          provider,
+          model,
+          objects: batch,
+          imagePath: frame.path,
+          taskId: task.task_id,
+          sleep: (ms) => this.sleep(ms),
+          // Never hand the whole frame's remaining budget to one batch: a batch
+          // is capped at five attempts, and the frame cap only shrinks it when
+          // earlier batches already spent most of the 5K allowance.
+          maxAttempts: Math.min(MAX_ATTEMPTS_PER_FRAME, remaining),
+          beforeCall: () => {
+            this.assertCapacity(task.task_id);
+            this.reserveBudget(task.task_id);
+            pendingReservations += 1;
+          },
+          onAttempt: (attempt) => {
+            pendingReservations = Math.max(0, pendingReservations - 1);
+            this.releaseBudget(task.task_id);
+            this.insertCall(task.task_id, frame.frame_id, modelName, attempt);
+          },
+          credentialRetry: this.credentialRetry,
+        });
+        if (!result.ok) {
+          if (result.reason === 'format') {
+            this.failModelFrame(task.task_id, frame.frame_id, frame.path, result.message);
+          } else {
+            const total = this.frameCallCount(frame.frame_id);
+            const detail =
+              total >= frameAttemptLimit
+                ? `模型调用失败（累计 ${total} 次）：${result.message}`
+                : `模型调用失败（累计 ${total} 次，本帧上限 ${frameAttemptLimit} 次）：${result.message}`;
+            this.failCallFrame(frame.frame_id, frame.path, detail);
+            this.noteCallStreak(task.task_id);
+          }
+          return;
+        }
+        judged.push(...result.objects);
       }
       const accepted = targets.map((source) => {
-        const object = result.objects.find((entry) => entry.name === source.name);
+        const object = judged.find((entry) => entry.name === source.name);
         if (object === undefined) throw new TaskPause('INTERNAL', `模型输出缺少对象 ${source.name}`);
         return {
           object: source,

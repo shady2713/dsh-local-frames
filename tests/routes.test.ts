@@ -18,6 +18,7 @@ const snapshot = {
     budgetPerTask: 3000,
     frameIntervalSeconds: 2,
     visionConcurrency: 2,
+    objectsPerCall: 40,
     exportDir: null,
     lastImportPath: null,
     allowRoots: [],
