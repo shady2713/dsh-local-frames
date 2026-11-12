@@ -32,6 +32,8 @@ export interface Settings {
   frameIntervalSeconds: number;
   /** Number of frames labelled in parallel; 1 means one model call at a time. */
   visionConcurrency: number;
+  /** Maximum objects sent in one model call; a frame is judged in serial batches. */
+  objectsPerCall: number;
   /** Absolute export directory; null means the default `<dataDir>/exports`. */
   exportDir: string | null;
   /** Last absolute path submitted on the progress page; refilled when it reopens. */

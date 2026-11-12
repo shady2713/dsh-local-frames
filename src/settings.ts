@@ -10,8 +10,8 @@ export const MAX_RECENT_EXPORTS = 10;
 /**
  * Defaults fixed by the specification (§12.1): one model slot (unset until the
  * user selects one), a 3000-call budget per task, 2-second frame interval,
- * two concurrent model calls and an empty allowlist, which rejects every import
- * until configured.
+ * two concurrent model calls, 40 objects per call and an empty allowlist, which
+ * rejects every import until configured.
  *
  * The data-directory cap default is not stated by the specification; it is
  * kept at 50 GB and surfaced on the settings page for the user to change.
@@ -22,6 +22,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   budgetPerTask: 3000,
   frameIntervalSeconds: 2,
   visionConcurrency: 2,
+  objectsPerCall: 40,
   exportDir: null,
   lastImportPath: null,
   allowRoots: [],
@@ -32,6 +33,8 @@ export const FRAME_INTERVAL_MIN_SECONDS = 1;
 export const FRAME_INTERVAL_MAX_SECONDS = 3600;
 export const VISION_CONCURRENCY_MIN = 1;
 export const VISION_CONCURRENCY_MAX = 8;
+export const OBJECTS_PER_CALL_MIN = 1;
+export const OBJECTS_PER_CALL_MAX = 80;
 
 export class SettingsError extends Error {
   constructor(message: string) {
@@ -47,6 +50,7 @@ export function defaultSettings(): Settings {
     budgetPerTask: DEFAULT_SETTINGS.budgetPerTask,
     frameIntervalSeconds: DEFAULT_SETTINGS.frameIntervalSeconds,
     visionConcurrency: DEFAULT_SETTINGS.visionConcurrency,
+    objectsPerCall: DEFAULT_SETTINGS.objectsPerCall,
     exportDir: null,
     lastImportPath: null,
     allowRoots: [],
@@ -163,6 +167,7 @@ const SETTINGS_FIELDS = [
   'budgetPerTask',
   'frameIntervalSeconds',
   'visionConcurrency',
+  'objectsPerCall',
   'exportDir',
   'lastImportPath',
   'allowRoots',
@@ -188,6 +193,11 @@ export function parseSettings(value: unknown): Settings {
       value.visionConcurrency === undefined
         ? DEFAULT_SETTINGS.visionConcurrency
         : readInteger(value.visionConcurrency, 'visionConcurrency', VISION_CONCURRENCY_MIN, VISION_CONCURRENCY_MAX),
+    // Rows written before batching existed keep their other values.
+    objectsPerCall:
+      value.objectsPerCall === undefined
+        ? DEFAULT_SETTINGS.objectsPerCall
+        : readInteger(value.objectsPerCall, 'objectsPerCall', OBJECTS_PER_CALL_MIN, OBJECTS_PER_CALL_MAX),
     exportDir: readOptionalAbsolutePath(value.exportDir, 'exportDir'),
     lastImportPath: readOptionalAbsolutePath(value.lastImportPath, 'lastImportPath'),
     allowRoots: readAllowRoots(value.allowRoots),
@@ -206,6 +216,7 @@ export function mergeSettings(current: Settings, patch: unknown): Settings {
     frameIntervalSeconds:
       'frameIntervalSeconds' in patch ? patch.frameIntervalSeconds : current.frameIntervalSeconds,
     visionConcurrency: 'visionConcurrency' in patch ? patch.visionConcurrency : current.visionConcurrency,
+    objectsPerCall: 'objectsPerCall' in patch ? patch.objectsPerCall : current.objectsPerCall,
     exportDir: 'exportDir' in patch ? patch.exportDir : current.exportDir,
     lastImportPath: 'lastImportPath' in patch ? patch.lastImportPath : current.lastImportPath,
     allowRoots: 'allowRoots' in patch ? patch.allowRoots : current.allowRoots,
