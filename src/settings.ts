@@ -34,7 +34,7 @@ export const FRAME_INTERVAL_MAX_SECONDS = 3600;
 export const VISION_CONCURRENCY_MIN = 1;
 export const VISION_CONCURRENCY_MAX = 8;
 export const OBJECTS_PER_CALL_MIN = 1;
-export const OBJECTS_PER_CALL_MAX = 80;
+export const OBJECTS_PER_CALL_MAX = 300;
 
 export class SettingsError extends Error {
   constructor(message: string) {

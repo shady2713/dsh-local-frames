@@ -426,7 +426,7 @@ describe('issue #17: object batching per frame', () => {
 });
 
 describe('issue #17: objectsPerCall settings', () => {
-  it('defaults to 40 for legacy rows and accepts only integers from 1 to 80', () => {
+  it('defaults to 40 for legacy rows and accepts only integers from 1 to 300', () => {
     expect(defaultSettings().objectsPerCall).toBe(40);
     const legacy: Record<string, unknown> = { ...defaultSettings() };
     delete legacy.objectsPerCall;
@@ -434,8 +434,8 @@ describe('issue #17: objectsPerCall settings', () => {
 
     const base = defaultSettings();
     expect(parseSettings({ ...base, objectsPerCall: 1 }).objectsPerCall).toBe(1);
-    expect(parseSettings({ ...base, objectsPerCall: 80 }).objectsPerCall).toBe(80);
-    for (const bad of [0, 81, 40.5]) {
+    expect(parseSettings({ ...base, objectsPerCall: 300 }).objectsPerCall).toBe(300);
+    for (const bad of [0, 301, 40.5]) {
       expect(() => parseSettings({ ...base, objectsPerCall: bad })).toThrow(SettingsError);
     }
   });
@@ -443,13 +443,13 @@ describe('issue #17: objectsPerCall settings', () => {
   it('rejects an invalid save, keeps the previous value and persists across a reopen', () => {
     const db = openDatabase(makeTempDir('lf-issue17-settings-'));
     try {
-      new SettingsStore(db).update({ objectsPerCall: 55 });
-      expect(new SettingsStore(db).load().objectsPerCall).toBe(55);
+      new SettingsStore(db).update({ objectsPerCall: 255 });
+      expect(new SettingsStore(db).load().objectsPerCall).toBe(255);
 
       expect(() => new SettingsStore(db).update({ objectsPerCall: 0 })).toThrow(SettingsError);
-      expect(() => new SettingsStore(db).update({ objectsPerCall: 81 })).toThrow(SettingsError);
-      expect(() => new SettingsStore(db).update({ objectsPerCall: 2.5 })).toThrow(SettingsError);
-      expect(new SettingsStore(db).load().objectsPerCall).toBe(55);
+      expect(() => new SettingsStore(db).update({ objectsPerCall: 301 })).toThrow(SettingsError);
+      expect(() => new SettingsStore(db).update({ objectsPerCall: 40.5 })).toThrow(SettingsError);
+      expect(new SettingsStore(db).load().objectsPerCall).toBe(255);
     } finally {
       db.close();
     }

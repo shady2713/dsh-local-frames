@@ -413,11 +413,11 @@ window.__ModuleLoader__.load({
               h(
                 'label',
                 { className: 'lf-field' },
-                '每批对象数（1–80）',
+                '每批对象数（1–300）',
                 h('input', {
                   type: 'number',
                   min: 1,
-                  max: 80,
+                  max: 300,
                   value: objectsPerCall,
                   onChange: (event) => setObjectsPerCall(event.target.value),
                 }),
