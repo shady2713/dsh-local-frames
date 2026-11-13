@@ -282,7 +282,7 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
       const settings = deps.settings.load();
       const missing: string[] = [];
       if (activeTask(deps.db) !== null) missing.push('已有进行中或暂停的任务');
-      if (settings.model === null) missing.push('未选择模型');
+      if (settings.modelPool.length === 0) missing.push('未选择模型');
       if (settings.allowRoots.length === 0) missing.push('允许读取的视频根目录白名单为空');
       const selected = selectTargets(deps.db, targetIds.length === 0 ? null : targetIds);
       if (typeof selected === 'string') missing.push(selected);
@@ -301,11 +301,12 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
       }
       const taskId = newId();
       const now = nowIso();
+      const firstModel = settings.modelPool[0];
       const spec = {
         targetIds: selected.map((target) => target.target_id),
         frameIntervalSeconds: settings.frameIntervalSeconds,
         budgetPerTask: settings.budgetPerTask,
-        model: settings.model,
+        model: firstModel === undefined ? null : { provider: firstModel.provider, model: firstModel.model },
       };
       deps.db.raw
         .prepare(

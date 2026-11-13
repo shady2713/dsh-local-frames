@@ -18,8 +18,8 @@ import {
   writeProgress,
   type TaskProgress,
 } from './progress.js';
-import type { SettingsStore } from './settings.js';
-import type { Verdict, Visibility } from './types.js';
+import { callModelName, MODEL_POOL_TOTAL_CONCURRENCY_MAX, type SettingsStore } from './settings.js';
+import type { ModelChoice, ModelPoolEntry, Verdict, Visibility } from './types.js';
 import type { VisionClient } from './vision.js';
 
 export interface PipelineDeps {
@@ -411,15 +411,18 @@ export class Pipeline {
   }
 
   /**
-   * Label up to `visionConcurrency` pending frames of the task in parallel.
-   * Frame selection is task-wide so short videos (one pending frame each) do
-   * not force the whole run back to serial calls.
+   * Start judging for the pending frames of the task. Frames are spread across
+   * the configured model pool: a frame that already has calls keeps the model
+   * that judged it (sticky), while a new frame goes to the pool model with the
+   * most free slots (ties broken by pool order). Every model has its own queue
+   * and concurrency, and the whole task is additionally capped at 16 in-flight
+   * model calls. A frame holds one slot of its model for all of its serial
+   * batches and retries and is never moved to another model.
    */
   private async judgePending(task: TaskRecord): Promise<void> {
     const spec = readSpec(task.spec_json);
     const settings = this.deps.settings.load();
-    const model = settings.model ?? spec.model;
-    if (model === null) throw new TaskPause('NO_MODEL', '未选择模型');
+    if (settings.modelPool.length === 0) throw new TaskPause('NO_MODEL', '未选择模型');
     const targets = this.loadObjects(spec.targetIds);
     if (targets.length === 0) throw new TaskPause('NO_TARGET', '任务没有可判断的对象');
     const frames = this.deps.db.raw
@@ -427,27 +430,114 @@ export class Pipeline {
         `SELECT frames.frame_id, frames.path FROM frames
          JOIN items ON items.item_id = frames.item_id
          WHERE items.task_id = ? AND frames.state = 'PENDING' AND frames.path IS NOT NULL
-         ORDER BY items.created_at ASC, items.rowid ASC, frames.t_ms ASC, frames.rowid ASC
-         LIMIT ?`,
+         ORDER BY items.created_at ASC, items.rowid ASC, frames.t_ms ASC, frames.rowid ASC`,
       )
-      .all(task.task_id, settings.visionConcurrency) as unknown as Array<{ frame_id: string; path: string }>;
+      .all(task.task_id) as unknown as Array<{ frame_id: string; path: string }>;
     if (frames.length === 0) return;
-    const modelName = `${model.provider}/${model.model}`.slice(0, 200);
+    const scheduled = this.scheduleFrames(frames, settings.modelPool);
     const settled = await Promise.allSettled(
-      frames.map((frame) =>
+      scheduled.map((entry) =>
         this.judgeFrame(
           task,
-          frame,
+          entry.frame,
           targets,
           settings.objectsPerCall,
-          model.provider,
-          model.model,
-          modelName,
+          entry.provider,
+          entry.model,
+          entry.modelName,
         ),
       ),
     );
     const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === 'rejected');
     if (failed !== undefined) throw failed.reason;
+  }
+
+  /**
+   * Sticky assignment: the model recorded in `calls` for this frame, if any.
+   * The latest row is used because a frame's older attempts may predate the
+   * current pool configuration.
+   */
+  private frameAssignedModel(frameId: string, pool: readonly ModelPoolEntry[]): ModelChoice | null {
+    const row = this.deps.db.raw
+      .prepare('SELECT model FROM calls WHERE frame_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1')
+      .get(frameId) as { model?: string } | undefined;
+    const recorded = row?.model;
+    if (typeof recorded !== 'string' || recorded.length === 0) return null;
+    // Match the persisted (200-character-capped) `${provider}/${model}` string
+    // against the pool first; this also disambiguates provider names with "/".
+    for (const entry of pool) {
+      if (callModelName(entry) === recorded) return { provider: entry.provider, model: entry.model };
+    }
+    // A model removed from the pool stays sticky. Recover it from the stored
+    // string; truncation can only matter above the 200-character cap.
+    const separator = recorded.indexOf('/');
+    if (separator <= 0 || separator === recorded.length - 1) return null;
+    return { provider: recorded.slice(0, separator), model: recorded.slice(separator + 1) };
+  }
+
+  /**
+   * Choose which pending frames to start now. A started frame holds its model
+   * slot until its batches settle, so the result never exceeds a row's
+   * concurrency, the 16-call runtime cap or the pool total. A frame waiting
+   * for its sticky model's slot is skipped (never reassigned); a new frame is
+   * skipped when every pool model is full.
+   */
+  private scheduleFrames(
+    frames: readonly { frame_id: string; path: string }[],
+    pool: readonly ModelPoolEntry[],
+  ): Array<{ frame: { frame_id: string; path: string }; provider: string; model: string; modelName: string }> {
+    interface PoolSlot {
+      provider: string;
+      model: string;
+      concurrency: number;
+      inFlight: number;
+    }
+    const slots: PoolSlot[] = pool.map((entry) => ({ ...entry, inFlight: 0 }));
+    // A model removed from the pool has no recorded concurrency; run its
+    // already-assigned frames one at a time to stay conservative.
+    const removedModels = new Map<string, number>();
+    const scheduled: Array<{
+      frame: { frame_id: string; path: string };
+      provider: string;
+      model: string;
+      modelName: string;
+    }> = [];
+    let totalInFlight = 0;
+    for (const frame of frames) {
+      if (totalInFlight >= MODEL_POOL_TOTAL_CONCURRENCY_MAX) break;
+      const assigned = this.frameAssignedModel(frame.frame_id, pool);
+      let provider: string;
+      let model: string;
+      if (assigned !== null) {
+        const slot = slots.find((entry) => entry.provider === assigned.provider && entry.model === assigned.model);
+        if (slot !== undefined) {
+          if (slot.inFlight >= slot.concurrency) continue;
+          slot.inFlight += 1;
+        } else {
+          const key = callModelName(assigned);
+          const active = removedModels.get(key) ?? 0;
+          if (active >= 1) continue;
+          removedModels.set(key, active + 1);
+        }
+        provider = assigned.provider;
+        model = assigned.model;
+      } else {
+        let best: PoolSlot | null = null;
+        for (const candidate of slots) {
+          if (candidate.inFlight >= candidate.concurrency) continue;
+          if (best === null || candidate.concurrency - candidate.inFlight > best.concurrency - best.inFlight) {
+            best = candidate;
+          }
+        }
+        if (best === null) continue;
+        best.inFlight += 1;
+        provider = best.provider;
+        model = best.model;
+      }
+      totalInFlight += 1;
+      scheduled.push({ frame, provider, model, modelName: callModelName({ provider, model }) });
+    }
+    return scheduled;
   }
 
   /** Automatic attempts already recorded for one frame, across batches and restarts. */
