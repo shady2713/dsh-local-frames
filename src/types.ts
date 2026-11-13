@@ -3,10 +3,19 @@ import { join } from 'node:path';
 
 export type TargetAliases = Record<string, string[]>;
 
-/** The single model slot. Credentials live in DSH, never in this plugin. */
+/** One model choice. Credentials live in DSH, never in this plugin. */
 export interface ModelChoice {
   provider: string;
   model: string;
+}
+
+/**
+ * One row of the model pool: a DSH image model and its own call concurrency.
+ * A frame is assigned to exactly one row for its whole judgment.
+ */
+export interface ModelPoolEntry extends ModelChoice {
+  /** Maximum in-flight model calls for this model during a task: 1–8. */
+  concurrency: number;
 }
 
 /** One completed export, newest first in {@link Settings.recentExports}. */
@@ -26,14 +35,17 @@ export interface RecentExport {
 
 /** User-editable settings stored in the plugin's own `settings` table. No secrets. */
 export interface Settings {
+  /** Legacy single-model slot, kept so old rows and old writers still parse. Scheduling uses {@link modelPool}. */
   model: ModelChoice | null;
   dataDirLimitGb: number;
   budgetPerTask: number;
   frameIntervalSeconds: number;
-  /** Number of frames labelled in parallel; 1 means one model call at a time. */
+  /** Legacy global concurrency, kept for compatibility with rows written before the model pool. */
   visionConcurrency: number;
   /** Maximum objects sent in one model call; a frame is judged in serial batches. */
   objectsPerCall: number;
+  /** Authoritative model pool; every frame is judged by exactly one of these models. */
+  modelPool: ModelPoolEntry[];
   /** Absolute export directory; null means the default `<dataDir>/exports`. */
   exportDir: string | null;
   /** Last absolute path submitted on the progress page; refilled when it reopens. */

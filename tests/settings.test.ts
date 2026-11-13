@@ -18,6 +18,7 @@ describe('settings defaults and validation', () => {
     expect(settings.budgetPerTask).toBe(3000);
     expect(settings.frameIntervalSeconds).toBe(2);
     expect(settings.visionConcurrency).toBe(2);
+    expect(settings.modelPool).toEqual([]);
     expect(settings.allowRoots).toEqual([]);
     expect(settings.exportDir).toBeNull();
     expect(settings.lastImportPath).toBeNull();

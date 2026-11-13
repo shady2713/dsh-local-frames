@@ -21,6 +21,8 @@ window.__ModuleLoader__.load({
 .lf-error { color:#c2410c; font-size:13px; margin:0; }
 .lf-table { width:100%; border-collapse:collapse; font-size:13px; }
 .lf-table th, .lf-table td { text-align:left; border-bottom:1px solid var(--dsw-alias-border-l1,#e5e6eb); padding:6px 4px; vertical-align:top; }
+.lf-pool-table select { border:1px solid var(--dsw-alias-border-l1,#e5e6eb); border-radius:8px; padding:6px 8px; font:inherit; background:transparent; color:inherit; min-width:220px; }
+.lf-pool-table input { border:1px solid var(--dsw-alias-border-l1,#e5e6eb); border-radius:8px; padding:6px 8px; font:inherit; background:transparent; color:inherit; width:80px; }
 .lf-ok { color:#15803d; }
 .lf-bad { color:#c2410c; }
 .lf-toast { display:flex; flex-direction:column; gap:8px; border:1px solid; border-radius:10px; padding:12px 14px; font-size:14px; font-weight:600; }
@@ -118,7 +120,9 @@ window.__ModuleLoader__.load({
       const [limit, setLimit] = React.useState('50');
       const [budget, setBudget] = React.useState('3000');
       const [interval, setIntervalSeconds] = React.useState('2');
-      const [concurrency, setConcurrency] = React.useState('2');
+      const [poolRows, setPoolRows] = React.useState([]);
+      const [poolDirty, setPoolDirty] = React.useState(false);
+      const poolSyncedRef = React.useRef('');
       const [objectsPerCall, setObjectsPerCall] = React.useState('40');
       const [exportDir, setExportDir] = React.useState('');
       const [root, setRoot] = React.useState('');
@@ -143,10 +147,27 @@ window.__ModuleLoader__.load({
         setLimit(String(status.settings.dataDirLimitGb));
         setBudget(String(status.settings.budgetPerTask));
         setIntervalSeconds(String(status.settings.frameIntervalSeconds));
-        setConcurrency(String(status.settings.visionConcurrency));
         setObjectsPerCall(String(status.settings.objectsPerCall));
         setExportDir(status.settings.exportDir ?? '');
       }, [status]);
+      // The model list is the editable copy; the status snapshot syncs it back
+      // after a save. Unsaved edits win over the 3-second status polling.
+      React.useEffect(() => {
+        if (status === null) return;
+        const pool = Array.isArray(status.settings?.modelPool) ? status.settings.modelPool : [];
+        const incoming = JSON.stringify(pool);
+        if (incoming === poolSyncedRef.current) {
+          setPoolDirty(false);
+          return;
+        }
+        if (poolDirty) return;
+        poolSyncedRef.current = incoming;
+        setPoolRows(pool.map((entry) => ({
+          provider: entry.provider,
+          model: entry.model,
+          concurrency: String(entry.concurrency),
+        })));
+      }, [status, poolDirty]);
       React.useEffect(() => {
         if (lastPathFilled.current || status === null) return;
         lastPathFilled.current = true;
@@ -155,9 +176,10 @@ window.__ModuleLoader__.load({
       }, [status]);
       const settings = status?.settings;
       const defaultExportDir = status?.dataDir?.path ? `${status.dataDir.path}/exports` : '数据目录/exports';
-      const modelValue = settings?.model === null || settings?.model === undefined
-        ? ''
-        : `${settings.model.provider}\n${settings.model.model}`;
+      const poolTotal = poolRows.reduce((sum, row) => {
+        const value = Number(row.concurrency);
+        return sum + (Number.isInteger(value) ? value : 0);
+      }, 0);
       const task = status?.task;
       const funnel = status?.funnel;
       const taskTargetIds = Array.isArray(task?.target_ids) ? task.target_ids : [];
@@ -195,6 +217,58 @@ window.__ModuleLoader__.load({
           })
           .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
       };
+      const addPoolRow = () => {
+        setMessage('');
+        setError('');
+        setPoolDirty(true);
+        setPoolRows((current) => {
+          if (current.length >= 5) return current;
+          const used = new Set(current.map((row) => `${row.provider}\n${row.model}`));
+          const available = models.find((entry) => !used.has(`${entry.provider}\n${entry.model}`));
+          return [
+            ...current,
+            available === undefined
+              ? { provider: '', model: '', concurrency: '2' }
+              : { provider: available.provider, model: available.model, concurrency: '2' },
+          ];
+        });
+      };
+      const updatePoolRow = (index, patch) => {
+        setPoolDirty(true);
+        setPoolRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...patch } : row)));
+      };
+      const removePoolRow = (index) => {
+        setPoolDirty(true);
+        setPoolRows((current) => current.filter((_, rowIndex) => rowIndex !== index));
+      };
+      const savePool = () => {
+        if (settings === null || settings === undefined) {
+          setError('设置尚未载入，请稍候再试');
+          return;
+        }
+        setMessage('');
+        setError('');
+        const modelPool = poolRows.map((row) => ({
+          provider: row.provider,
+          model: row.model,
+          concurrency: Number(row.concurrency),
+        }));
+        request('/api/local-frames/settings', { modelPool })
+          .then((payload) => {
+            const saved = Array.isArray(payload.data?.modelPool) ? payload.data.modelPool : modelPool;
+            poolSyncedRef.current = JSON.stringify(saved);
+            setPoolRows(saved.map((entry) => ({
+              provider: entry.provider,
+              model: entry.model,
+              concurrency: String(entry.concurrency),
+            })));
+            // Keep local edits authoritative until the status poll reflects the save.
+            setPoolDirty(true);
+            setMessage('已保存');
+            reload();
+          })
+          .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
+      };
       const saveSettings = () => {
         if (settings === null || settings === undefined) {
           setError('设置尚未载入，请稍候再试');
@@ -215,7 +289,6 @@ window.__ModuleLoader__.load({
             dataDirLimitGb: Number(limit),
             budgetPerTask: Number(budget),
             frameIntervalSeconds: Number(interval),
-            visionConcurrency: Number(concurrency),
             objectsPerCall: Number(objectsPerCall),
             exportDir: dir.length > 0 ? dir : null,
             allowRoots: nextRoot.length > 0 ? [...settings.allowRoots, nextRoot] : settings.allowRoots,
@@ -335,35 +408,89 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'lf-card' },
             h('h3', null, '模型'),
+            Paragraph('模型池最多 5 个模型，每个模型有独立的调用并发。一帧在整个判定期间只交给其中一个模型（粘性分配，不投票、不换模型）。'),
             h(
-              'label',
-              { className: 'lf-field' },
-              '视觉模型',
+              'table',
+              { className: 'lf-table lf-pool-table' },
+              h('thead', null, h('tr', null, h('th', null, 'DSH 视觉模型'), h('th', null, '并发（1–8）'), h('th', null, ''))),
               h(
-                'select',
-                {
-                  value: modelValue,
-                  onChange: (event) => {
-                    const value = event.target.value;
-                    if (value === '') {
-                      save({ model: null });
-                      return;
-                    }
-                    const [provider, model] = value.split('\n');
-                    save({ model: { provider, model } });
-                  },
-                },
-                h('option', { value: '' }, '未选择'),
-                models.map((model) =>
-                  h(
-                    'option',
-                    { key: `${model.provider}/${model.model}`, value: `${model.provider}\n${model.model}` },
-                    `${model.provider} / ${model.name || model.model}`,
-                  ),
-                ),
+                'tbody',
+                null,
+                poolRows.length === 0
+                  ? h('tr', null, h('td', { colSpan: 3 }, '模型池为空：可以保存，但不会开始判定。'))
+                  : poolRows.map((row, index) => {
+                      const value = row.provider.length === 0 ? '' : `${row.provider}\n${row.model}`;
+                      const known = models.some((entry) => entry.provider === row.provider && entry.model === row.model);
+                      return h(
+                        'tr',
+                        { key: index },
+                        h(
+                          'td',
+                          null,
+                          h(
+                            'select',
+                            {
+                              value,
+                              onChange: (event) => {
+                                const next = event.target.value;
+                                if (next === '') {
+                                  updatePoolRow(index, { provider: '', model: '' });
+                                  return;
+                                }
+                                const [provider, model] = next.split('\n');
+                                updatePoolRow(index, { provider, model });
+                              },
+                            },
+                            h('option', { value: '' }, '未选择'),
+                            row.provider.length > 0 && !known
+                              ? h('option', { value }, `${row.provider} / ${row.model}`)
+                              : null,
+                            models.map((entry) =>
+                              h(
+                                'option',
+                                { key: `${entry.provider}/${entry.model}`, value: `${entry.provider}\n${entry.model}` },
+                                `${entry.provider} / ${entry.name || entry.model}`,
+                              ),
+                            ),
+                          ),
+                        ),
+                        h(
+                          'td',
+                          null,
+                          h('input', {
+                            type: 'number',
+                            min: 1,
+                            max: 8,
+                            step: 1,
+                            value: row.concurrency,
+                            onChange: (event) => updatePoolRow(index, { concurrency: event.target.value }),
+                          }),
+                        ),
+                        h(
+                          'td',
+                          null,
+                          h(
+                            'button',
+                            { className: 'lf-button', type: 'button', onClick: () => removePoolRow(index) },
+                            '删除',
+                          ),
+                        ),
+                      );
+                    }),
               ),
             ),
-            h('p', { className: 'lf-hint' }, '只使用一个模型。密钥留在 DSH 模型页，不会写入本插件。'),
+            h(
+              'div',
+              { className: 'lf-row' },
+              h(
+                'button',
+                { className: 'lf-button', type: 'button', disabled: poolRows.length >= 5, onClick: addPoolRow },
+                '添加模型',
+              ),
+              h('button', { className: 'lf-button', type: 'button', onClick: savePool }, '保存模型池'),
+              h('span', { className: poolTotal > 16 ? 'lf-bad' : 'lf-hint' }, `并发合计 ${poolTotal} / 16`),
+            ),
+            h('p', { className: 'lf-hint' }, '密钥留在 DSH 模型页，不会写入本插件。'),
           ),
           h(
             'div',
@@ -396,18 +523,6 @@ window.__ModuleLoader__.load({
                   max: 3600,
                   value: interval,
                   onChange: (event) => setIntervalSeconds(event.target.value),
-                }),
-              ),
-              h(
-                'label',
-                { className: 'lf-field' },
-                '判定并发（1–8）',
-                h('input', {
-                  type: 'number',
-                  min: 1,
-                  max: 8,
-                  value: concurrency,
-                  onChange: (event) => setConcurrency(event.target.value),
                 }),
               ),
               h(
