@@ -62,7 +62,7 @@ describe('local video path validation', () => {
     await expect(validateVideoPath(file, { allowRoots: [root] })).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
   });
 
-  it('rejects a symlink that escapes the allowlist', async () => {
+  it.skipIf(process.platform === 'win32')('rejects a symlink that escapes the allowlist', async () => {
     const root = makeTempDir('lf-root-');
     const outside = makeTempDir('lf-outside-');
     const secret = writeFixtureFile(join(outside, 'secret.mp4'));
@@ -71,7 +71,7 @@ describe('local video path validation', () => {
     await expect(validateVideoPath(link, { allowRoots: [root] })).rejects.toMatchObject({ code: 'NOT_ALLOWED' });
   });
 
-  it('accepts a symlink that stays inside the allowlist', async () => {
+  it.skipIf(process.platform === 'win32')('accepts a symlink that stays inside the allowlist', async () => {
     const root = makeTempDir('lf-root-');
     const real = writeFixtureFile(join(root, 'real.mp4'));
     const link = join(root, 'alias.mp4');

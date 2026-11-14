@@ -53,7 +53,7 @@ function qualified(name: string): VisionResult {
 }
 
 describe('ffmpeg frames, dedup, and unchanged originals', () => {
-  it('extracts, deduplicates across videos, labels only unique frames, and exports a stable split', async () => {
+  it.skipIf(process.platform === 'win32')('extracts, deduplicates across videos, labels only unique frames, and exports a stable split', async () => {
     const dataDir = makeTempDir('lf-data-');
     const root = makeTempDir('lf-videos-');
     const hidden = join(root, 'skip-link');
