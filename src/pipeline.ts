@@ -442,6 +442,7 @@ export class Pipeline {
           entry.frame,
           targets,
           settings.objectsPerCall,
+          settings.visionCallTimeoutSeconds * 1000,
           entry.provider,
           entry.model,
           entry.modelName,
@@ -551,7 +552,8 @@ export class Pipeline {
   /**
    * Judge one frame in serial batches of at most `objectsPerCall` objects.
    *
-   * Every batch goes through {@link judgeBatch} with its own 120-second timeout
+   * Every batch goes through {@link judgeBatch} with its own configured timeout
+   * (the `visionCallTimeoutSeconds` setting, default 120 seconds)
    * and at most five attempts. The per-frame automatic-attempt limit is five per
    * batch (`5 × ceil(objects / objectsPerCall)`), persisted in `calls`, so a
    * restart cannot hand the same frame a fresh budget. A batch that exhausts its
@@ -563,6 +565,7 @@ export class Pipeline {
     frame: { frame_id: string; path: string },
     targets: readonly PromptObject[],
     objectsPerCall: number,
+    visionTimeoutMs: number,
     provider: string,
     model: string,
     modelName: string,
@@ -592,6 +595,7 @@ export class Pipeline {
           objects: batch,
           imagePath: frame.path,
           taskId: task.task_id,
+          timeoutMs: visionTimeoutMs,
           sleep: (ms) => this.sleep(ms),
           // Never hand the whole frame's remaining budget to one batch: a batch
           // is capped at five attempts, and the frame cap only shrinks it when
@@ -793,6 +797,11 @@ export class Pipeline {
   }
 
   private finishTask(taskId: string): void {
+    // #21: the state machine may only finish a task it is actually running.
+    // An INGESTING task (or one paused/cancelled during an import) is never
+    // DONE'd here.
+    const task = this.taskById(taskId);
+    if (task === null || task.status !== 'RUNNING') return;
     const counts = this.deps.db.raw
       .prepare(
         `SELECT targets.name AS name, labels.outcome AS outcome, COUNT(*) AS count
@@ -832,6 +841,86 @@ export interface ControlResult {
   status?: string;
 }
 
+/**
+ * Statuses that mean "a task still owns the collection slot". A route or tool
+ * starting a new task or retrying a finished one must treat INGESTING as active
+ * too, otherwise a second task can race an in-progress import (#21).
+ */
+export const ACTIVE_TASK_STATUS_SQL = "'INGESTING', 'RUNNING', 'PAUSED'";
+
+/**
+ * #21: mark a task INGESTING while videos are being imported. Returns the
+ * status to restore, or null when the task is already INGESTING (a concurrent
+ * import owns the transition) or not in a restorable state.
+ */
+export function beginIngest(db: LocalFramesDatabase, taskId: string, now: Date = new Date()): string | null {
+  const row = db.raw.prepare('SELECT status FROM tasks WHERE task_id = ?').get(taskId) as
+    | { status?: string }
+    | undefined;
+  if (typeof row?.status !== 'string' || (row.status !== 'RUNNING' && row.status !== 'PAUSED')) return null;
+  db.raw
+    .prepare("UPDATE tasks SET status = 'INGESTING', updated_at = ? WHERE task_id = ? AND status = ?")
+    .run(nowIso(now), taskId, row.status);
+  return row.status;
+}
+
+/**
+ * #21: restore the status saved by {@link beginIngest} once the import settles.
+ * A cancel/pause during the import changed the status already, so only an
+ * INGESTING row is replaced. Returns the restored status, or null.
+ */
+export function endIngest(
+  db: LocalFramesDatabase,
+  taskId: string,
+  restoreStatus: string | null,
+  now: Date = new Date(),
+): string | null {
+  if (restoreStatus === null) return null;
+  const result = db.raw
+    .prepare("UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ? AND status = 'INGESTING'")
+    .run(restoreStatus, nowIso(now), taskId);
+  return result.changes > 0 ? restoreStatus : null;
+}
+
+/**
+ * #21: recover tasks a crash left in INGESTING. A task with unfinished items
+ * resumes as RUNNING so the normal state machine continues it; a task whose
+ * crash happened before any item was written becomes PAUSED (never DONE) so it
+ * no longer looks like an import is running and the user can cancel it.
+ */
+export function recoverInterruptedIngests(
+  db: LocalFramesDatabase,
+  now: Date = new Date(),
+): { resumed: string[]; paused: string[] } {
+  const rows = db.raw
+    .prepare("SELECT task_id, progress_json FROM tasks WHERE status = 'INGESTING' ORDER BY created_at ASC, rowid ASC")
+    .all() as Array<{ task_id: string; progress_json: string }>;
+  const resumed: string[] = [];
+  const paused: string[] = [];
+  for (const row of rows) {
+    const unfinished = db.raw
+      .prepare("SELECT COUNT(*) AS count FROM items WHERE task_id = ? AND state IN ('NEW', 'PROBED', 'FRAMED')")
+      .get(row.task_id) as { count?: number } | undefined;
+    if ((unfinished?.count ?? 0) > 0) {
+      db.raw
+        .prepare("UPDATE tasks SET status = 'RUNNING', updated_at = ? WHERE task_id = ? AND status = 'INGESTING'")
+        .run(nowIso(now), row.task_id);
+      resumed.push(row.task_id);
+      continue;
+    }
+    const progress = readProgress(row.progress_json);
+    progress.pauseCode = 'INGEST_INTERRUPTED';
+    progress.pauseReason = '上次入库未完成，任务已暂停';
+    progress.retryAt = null;
+    writeProgress(db, row.task_id, progress, now);
+    db.raw
+      .prepare("UPDATE tasks SET status = 'PAUSED', updated_at = ? WHERE task_id = ? AND status = 'INGESTING'")
+      .run(nowIso(now), row.task_id);
+    paused.push(row.task_id);
+  }
+  return { resumed, paused };
+}
+
 /** Pause, resume (retry ERROR files), or cancel. Illegal transitions return ok: false. */
 export function controlTask(db: LocalFramesDatabase, dataDir: string, taskId: string, action: string, now: Date = new Date()): ControlResult {
   const task = db.raw.prepare('SELECT task_id, status, progress_json FROM tasks WHERE task_id = ?').get(taskId) as
@@ -839,7 +928,7 @@ export function controlTask(db: LocalFramesDatabase, dataDir: string, taskId: st
     | undefined;
   if (task === undefined) return { ok: false, message: '任务不存在' };
   if (action === 'pause') {
-    if (task.status !== 'RUNNING') return { ok: false, message: '状态不允许' };
+    if (task.status !== 'RUNNING' && task.status !== 'INGESTING') return { ok: false, message: '状态不允许' };
     const progress = readProgress(task.progress_json);
     progress.pauseCode = 'USER';
     progress.pauseReason = '用户暂停';
@@ -881,7 +970,9 @@ export function controlTask(db: LocalFramesDatabase, dataDir: string, taskId: st
     return { ok: true, message: '已继续', status: 'RUNNING' };
   }
   if (action === 'cancel') {
-    if (task.status !== 'RUNNING' && task.status !== 'PAUSED') return { ok: false, message: '状态不允许' };
+    if (task.status !== 'RUNNING' && task.status !== 'PAUSED' && task.status !== 'INGESTING') {
+      return { ok: false, message: '状态不允许' };
+    }
     db.raw.prepare("UPDATE tasks SET status = 'CANCELLED', updated_at = ? WHERE task_id = ?").run(nowIso(now), taskId);
     return { ok: true, message: '已取消', status: 'CANCELLED' };
   }

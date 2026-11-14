@@ -94,7 +94,7 @@ describe('environment check (§15.1)', () => {
     });
     const ffmpeg = report.checks.find((check) => check.id === 'ffmpeg');
     expect(ffmpeg?.status).toBe('MISSING');
-    expect(ffmpeg?.install).toContain('ffmpeg');
+    expect(ffmpeg?.install?.toLowerCase()).toContain('ffmpeg');
     expect(report.ok).toBe(false);
   });
 

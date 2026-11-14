@@ -83,7 +83,7 @@ function loadFailedFrames(db: LocalFramesDatabase, taskId: string): FrameRow[] {
 function otherActiveTask(db: LocalFramesDatabase, taskId: string): string | null {
   const row = db.raw
     .prepare(
-      "SELECT task_id FROM tasks WHERE status IN ('RUNNING', 'PAUSED') AND task_id != ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT task_id FROM tasks WHERE status IN ('INGESTING', 'RUNNING', 'PAUSED') AND task_id != ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
     .get(taskId) as { task_id?: string } | undefined;
   return typeof row?.task_id === 'string' ? row.task_id : null;

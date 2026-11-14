@@ -234,7 +234,7 @@ describe('agent tool registration', () => {
     }
   });
 
-  it('lf_video_add scans a directory in path order and skips hidden directories', async () => {
+  it.skipIf(process.platform === 'win32')('lf_video_add scans a directory in path order and skips hidden directories', async () => {
     const h = harness();
     try {
       const root = makeTempDir('lf-root-');

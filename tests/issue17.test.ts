@@ -426,11 +426,11 @@ describe('issue #17: object batching per frame', () => {
 });
 
 describe('issue #17: objectsPerCall settings', () => {
-  it('defaults to 40 for legacy rows and accepts only integers from 1 to 300', () => {
-    expect(defaultSettings().objectsPerCall).toBe(40);
+  it('defaults to 24 for legacy rows and accepts only integers from 1 to 300', () => {
+    expect(defaultSettings().objectsPerCall).toBe(24);
     const legacy: Record<string, unknown> = { ...defaultSettings() };
     delete legacy.objectsPerCall;
-    expect(parseSettings(legacy).objectsPerCall).toBe(40);
+    expect(parseSettings(legacy).objectsPerCall).toBe(24);
 
     const base = defaultSettings();
     expect(parseSettings({ ...base, objectsPerCall: 1 }).objectsPerCall).toBe(1);

@@ -3,7 +3,7 @@ import Schema from '@deepseek-ai/schemastery';
 import { openDatabase } from './db.js';
 import { openHostDirectory } from './open.js';
 import { createFfmpegMedia } from './media.js';
-import { clearTmp, Pipeline } from './pipeline.js';
+import { clearTmp, Pipeline, recoverInterruptedIngests } from './pipeline.js';
 import { createRoutes } from './routes.js';
 import { Scheduler } from './scheduler.js';
 import { SettingsStore } from './settings.js';
@@ -170,6 +170,9 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     }
     void clearTmp(dataDir)
       .then(() => {
+        // #21: an import interrupted by a crash left its task INGESTING.
+        // Resume tasks that still have work; never mark an empty import DONE.
+        recoverInterruptedIngests(database);
         if (!closed) scheduler.start();
       })
       .catch((error: unknown) => logError(`清空临时目录失败：${errorText(error)}`));

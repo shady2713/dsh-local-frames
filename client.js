@@ -113,6 +113,11 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Task status: an in-progress import must never read as finished. */
+    function taskStatusLabel(status) {
+      return status === 'INGESTING' ? '入库中' : status;
+    }
+
     function LocalFramesPage() {
       const { status, error, setError, reload } = useStatus();
       const { tasks } = useTasks();
@@ -123,7 +128,8 @@ window.__ModuleLoader__.load({
       const [poolRows, setPoolRows] = React.useState([]);
       const [poolDirty, setPoolDirty] = React.useState(false);
       const poolSyncedRef = React.useRef('');
-      const [objectsPerCall, setObjectsPerCall] = React.useState('40');
+      const [objectsPerCall, setObjectsPerCall] = React.useState('24');
+      const [visionCallTimeout, setVisionCallTimeout] = React.useState('120');
       const [exportDir, setExportDir] = React.useState('');
       const [root, setRoot] = React.useState('');
       const [message, setMessage] = React.useState('');
@@ -148,6 +154,7 @@ window.__ModuleLoader__.load({
         setBudget(String(status.settings.budgetPerTask));
         setIntervalSeconds(String(status.settings.frameIntervalSeconds));
         setObjectsPerCall(String(status.settings.objectsPerCall));
+        setVisionCallTimeout(String(status.settings.visionCallTimeoutSeconds));
         setExportDir(status.settings.exportDir ?? '');
       }, [status]);
       // The model list is the editable copy; the status snapshot syncs it back
@@ -290,6 +297,7 @@ window.__ModuleLoader__.load({
             budgetPerTask: Number(budget),
             frameIntervalSeconds: Number(interval),
             objectsPerCall: Number(objectsPerCall),
+            visionCallTimeoutSeconds: Number(visionCallTimeout),
             exportDir: dir.length > 0 ? dir : null,
             allowRoots: nextRoot.length > 0 ? [...settings.allowRoots, nextRoot] : settings.allowRoots,
           },
@@ -537,6 +545,18 @@ window.__ModuleLoader__.load({
                   onChange: (event) => setObjectsPerCall(event.target.value),
                 }),
               ),
+              h(
+                'label',
+                { className: 'lf-field' },
+                '判定超时（60–300 秒）',
+                h('input', {
+                  type: 'number',
+                  min: 60,
+                  max: 300,
+                  value: visionCallTimeout,
+                  onChange: (event) => setVisionCallTimeout(event.target.value),
+                }),
+              ),
               h('button', { className: 'lf-button', type: 'button', onClick: saveSettings }, '保存'),
             ),
           ),
@@ -662,7 +682,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'lf-card' },
             h('h3', null, '任务'),
-            Paragraph(task === null || task === undefined ? '当前没有任务' : `${task.task_id} · ${task.status}`),
+            Paragraph(task === null || task === undefined ? '当前没有任务' : `${task.task_id} · ${taskStatusLabel(task.status)}`),
             status?.pause?.reason ? Paragraph(`暂停原因：${status.pause.reason}`) : null,
             funnel
               ? h(
@@ -874,7 +894,7 @@ window.__ModuleLoader__.load({
                         'tr',
                         { key: entry.task_id },
                         h('td', { className: 'lf-toast-path' }, entry.task_id),
-                        h('td', null, entry.status),
+                        h('td', null, taskStatusLabel(entry.status)),
                         h('td', null, formatTime(entry.created_at)),
                         h('td', null, formatTime(entry.updated_at)),
                         h(
@@ -940,7 +960,7 @@ window.__ModuleLoader__.load({
                   onChange: (event) => setExportTaskId(event.target.value === '' ? null : event.target.value),
                 },
                 h('option', { value: '' }, task === null || task === undefined ? '当前任务（无）' : `当前任务（${task.task_id}）`),
-                tasks.map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${entry.status}`)),
+                tasks.map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${taskStatusLabel(entry.status)}`)),
               ),
             ),
             exportTargets.length === 0

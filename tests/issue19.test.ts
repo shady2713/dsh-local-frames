@@ -675,9 +675,9 @@ describe('issue #19: model pool settings', () => {
     }
   });
 
-  it('keeps objectsPerCall at 1–300 with default 40', () => {
+  it('keeps objectsPerCall at 1–300 with default 24', () => {
     const base = defaultSettings();
-    expect(base.objectsPerCall).toBe(40);
+    expect(base.objectsPerCall).toBe(24);
     expect(parseSettings({ ...base, objectsPerCall: 1 }).objectsPerCall).toBe(1);
     expect(parseSettings({ ...base, objectsPerCall: 300 }).objectsPerCall).toBe(300);
     expect(() => parseSettings({ ...base, objectsPerCall: 0 })).toThrow(SettingsError);

@@ -6,7 +6,7 @@ import { ExportSelectionError, exportTask, recentExportFrom, rememberRecentExpor
 import { HttpError, guard, readJsonBody, requireMethod, sendJson } from './http.js';
 import { describeIngest, acceptedCount, ingestPaths } from './ingest.js';
 import { nowIso } from './ids.js';
-import { controlTask } from './pipeline.js';
+import { beginIngest, controlTask, endIngest } from './pipeline.js';
 import type { Pipeline } from './pipeline.js';
 import { RetryError, retryTaskFailures } from './retry.js';
 import { SettingsError, type SettingsStore } from './settings.js';
@@ -53,13 +53,18 @@ function ready(deps: RoutesDeps): Ready {
   return { db: deps.db, settings: deps.settings, dataDir: deps.dataDir, pipeline: deps.pipeline };
 }
 
-function activeTaskId(db: LocalFramesDatabase): string | null {
+function activeTask(db: LocalFramesDatabase): { task_id: string; status: string } | null {
   const row = db.raw
     .prepare(
-      "SELECT task_id FROM tasks WHERE status IN ('RUNNING', 'PAUSED') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT task_id, status FROM tasks WHERE status IN ('INGESTING', 'RUNNING', 'PAUSED') ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
-    .get() as { task_id?: string } | undefined;
-  return typeof row?.task_id === 'string' ? row.task_id : null;
+    .get() as { task_id?: string; status?: string } | undefined;
+  if (typeof row?.task_id !== 'string' || typeof row.status !== 'string') return null;
+  return { task_id: row.task_id, status: row.status };
+}
+
+function activeTaskId(db: LocalFramesDatabase): string | null {
+  return activeTask(db)?.task_id ?? null;
 }
 
 function latestDoneTask(db: LocalFramesDatabase): string | null {
@@ -150,16 +155,25 @@ export function createRoutes(
           throw error;
         }
       }
-      const taskId = activeTaskId(services.db);
-      if (taskId === null) throw new HttpError(409, 'NO_TASK', '没有进行中或暂停的任务');
-      const report = await ingestPaths(
-        services.db,
-        taskId,
-        services.dataDir,
-        services.settings.load().allowRoots,
-        [{ path: importPath, recursive: body.recursive !== false }],
-        { force: body.force === true },
-      );
+      const task = activeTask(services.db);
+      if (task === null) throw new HttpError(409, 'NO_TASK', '没有进行中或暂停的任务');
+      // #21: importing into an existing task must not be finished by a scheduler
+      // tick. The status is restored after the import settles; a cancel during
+      // the import already changed it and is not overwritten.
+      const restoreStatus = beginIngest(services.db, task.task_id);
+      let report;
+      try {
+        report = await ingestPaths(
+          services.db,
+          task.task_id,
+          services.dataDir,
+          services.settings.load().allowRoots,
+          [{ path: importPath, recursive: body.recursive !== false }],
+          { force: body.force === true },
+        );
+      } finally {
+        endIngest(services.db, task.task_id, restoreStatus);
+      }
       if (acceptedCount(report) === 0) {
         if (report.existing.length > 0 && report.rejected.length === 0) {
           throw new HttpError(409, 'EXISTS', '已存在');

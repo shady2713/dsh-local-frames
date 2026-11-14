@@ -10,8 +10,8 @@ export const MAX_RECENT_EXPORTS = 10;
 /**
  * Defaults fixed by the specification (§12.1): an empty model pool (judging is
  * paused until the user adds a model), a 3000-call budget per task, a 2-second
- * frame interval, 40 objects per call and an empty allowlist, which rejects
- * every import until configured.
+ * frame interval, 24 objects per call, a 120-second call timeout and an empty
+ * allowlist, which rejects every import until configured.
  *
  * The data-directory cap default is not stated by the specification; it is
  * kept at 50 GB and surfaced on the settings page for the user to change.
@@ -22,7 +22,8 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   budgetPerTask: 3000,
   frameIntervalSeconds: 2,
   visionConcurrency: 2,
-  objectsPerCall: 40,
+  objectsPerCall: 24,
+  visionCallTimeoutSeconds: 120,
   modelPool: [],
   exportDir: null,
   lastImportPath: null,
@@ -36,6 +37,8 @@ export const VISION_CONCURRENCY_MIN = 1;
 export const VISION_CONCURRENCY_MAX = 8;
 export const OBJECTS_PER_CALL_MIN = 1;
 export const OBJECTS_PER_CALL_MAX = 300;
+export const VISION_CALL_TIMEOUT_MIN_SECONDS = 60;
+export const VISION_CALL_TIMEOUT_MAX_SECONDS = 300;
 /** The model pool may contain at most this many rows. */
 export const MODEL_POOL_MAX_ENTRIES = 5;
 /** Sum of all per-model call concurrency values; also the runtime in-flight cap. */
@@ -58,6 +61,7 @@ export function defaultSettings(): Settings {
     frameIntervalSeconds: DEFAULT_SETTINGS.frameIntervalSeconds,
     visionConcurrency: DEFAULT_SETTINGS.visionConcurrency,
     objectsPerCall: DEFAULT_SETTINGS.objectsPerCall,
+    visionCallTimeoutSeconds: DEFAULT_SETTINGS.visionCallTimeoutSeconds,
     modelPool: [],
     exportDir: null,
     lastImportPath: null,
@@ -229,6 +233,7 @@ const SETTINGS_FIELDS = [
   'frameIntervalSeconds',
   'visionConcurrency',
   'objectsPerCall',
+  'visionCallTimeoutSeconds',
   'modelPool',
   'exportDir',
   'lastImportPath',
@@ -274,6 +279,16 @@ export function parseSettings(value: unknown): Settings {
       value.objectsPerCall === undefined
         ? DEFAULT_SETTINGS.objectsPerCall
         : readInteger(value.objectsPerCall, 'objectsPerCall', OBJECTS_PER_CALL_MIN, OBJECTS_PER_CALL_MAX),
+    // Rows written before the timeout was configurable use the 120 s default.
+    visionCallTimeoutSeconds:
+      value.visionCallTimeoutSeconds === undefined
+        ? DEFAULT_SETTINGS.visionCallTimeoutSeconds
+        : readInteger(
+            value.visionCallTimeoutSeconds,
+            'visionCallTimeoutSeconds',
+            VISION_CALL_TIMEOUT_MIN_SECONDS,
+            VISION_CALL_TIMEOUT_MAX_SECONDS,
+          ),
     modelPool,
     exportDir: readOptionalAbsolutePath(value.exportDir, 'exportDir'),
     lastImportPath: readOptionalAbsolutePath(value.lastImportPath, 'lastImportPath'),
@@ -301,6 +316,8 @@ export function mergeSettings(current: Settings, patch: unknown): Settings {
       'frameIntervalSeconds' in patch ? patch.frameIntervalSeconds : current.frameIntervalSeconds,
     visionConcurrency: 'visionConcurrency' in patch ? patch.visionConcurrency : current.visionConcurrency,
     objectsPerCall: 'objectsPerCall' in patch ? patch.objectsPerCall : current.objectsPerCall,
+    visionCallTimeoutSeconds:
+      'visionCallTimeoutSeconds' in patch ? patch.visionCallTimeoutSeconds : current.visionCallTimeoutSeconds,
     exportDir: 'exportDir' in patch ? patch.exportDir : current.exportDir,
     lastImportPath: 'lastImportPath' in patch ? patch.lastImportPath : current.lastImportPath,
     allowRoots: 'allowRoots' in patch ? patch.allowRoots : current.allowRoots,

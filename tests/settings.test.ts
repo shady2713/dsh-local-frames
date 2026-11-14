@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { openDatabase } from '../src/db.js';
 import {
@@ -51,20 +51,25 @@ describe('settings defaults and validation', () => {
     const base = defaultSettings();
     const relative = parseSettingsSafe({ ...base, allowRoots: ['relative/path'] });
     expect(relative).toContain('must be absolute');
-    const settings = parseSettings({ ...base, allowRoots: ['/tmp/media', '/tmp/media/', '/tmp/other'] });
+    const parent = makeTempDir('lf-settings-roots-');
+    const media = join(parent, 'media');
+    const other = join(parent, 'other');
+    const settings = parseSettings({ ...base, allowRoots: [media, `${media}${sep}`, other] });
     expect(settings.allowRoots).toHaveLength(2);
     for (const root of settings.allowRoots) expect(isAbsolute(root)).toBe(true);
   });
 
   it('accepts absolute export and import paths and rejects relative values', () => {
     const base = defaultSettings();
+    const exportDir = makeTempDir('lf-settings-exports-');
+    const importDir = makeTempDir('lf-settings-imports-');
     const settings = parseSettings({
       ...base,
-      exportDir: '/tmp/local-frames-exports/',
-      lastImportPath: '/tmp/local-frames-media/in',
+      exportDir: `${exportDir}${sep}`,
+      lastImportPath: importDir,
     });
-    expect(settings.exportDir).toBe('/tmp/local-frames-exports');
-    expect(settings.lastImportPath).toBe('/tmp/local-frames-media/in');
+    expect(settings.exportDir).toBe(exportDir);
+    expect(settings.lastImportPath).toBe(importDir);
     const unset = parseSettings({ ...base, exportDir: null, lastImportPath: null });
     expect(unset.exportDir).toBeNull();
     expect(unset.lastImportPath).toBeNull();
@@ -84,17 +89,19 @@ describe('settings defaults and validation', () => {
 
   it('merges a partial patch without losing other values', () => {
     const current = defaultSettings();
+    const exportDir = makeTempDir('lf-settings-merge-exports-');
+    const importDir = makeTempDir('lf-settings-merge-imports-');
     const merged = mergeSettings(current, {
       frameIntervalSeconds: 5,
       visionConcurrency: 4,
-      exportDir: '/tmp/local-frames-exports',
-      lastImportPath: '/tmp/local-frames-media',
+      exportDir,
+      lastImportPath: importDir,
     });
     expect(merged.frameIntervalSeconds).toBe(5);
     expect(merged.visionConcurrency).toBe(4);
     expect(merged.budgetPerTask).toBe(3000);
-    expect(merged.exportDir).toBe('/tmp/local-frames-exports');
-    expect(merged.lastImportPath).toBe('/tmp/local-frames-media');
+    expect(merged.exportDir).toBe(exportDir);
+    expect(merged.lastImportPath).toBe(importDir);
     expect(merged.allowRoots).toEqual([]);
   });
 
@@ -143,6 +150,7 @@ describe('settings defaults and validation', () => {
     const db = openDatabase(makeTempDir());
     try {
       const store = new SettingsStore(db);
+      const exportsRoot = makeTempDir('lf-settings-recent-');
       const valid = {
         exported_at: '2026-01-01T00:00:00.000Z',
         task_id: 'task-1',
@@ -151,7 +159,7 @@ describe('settings defaults and validation', () => {
         images: 3,
         train: 2,
         val: 1,
-        directory: '/tmp/exports/2026-01-01_000000',
+        directory: join(exportsRoot, '2026-01-01_000000'),
         zip: false,
       };
       expect(mergeSettings(defaultSettings(), { recentExports: [valid] }).recentExports).toEqual([valid]);
@@ -160,7 +168,7 @@ describe('settings defaults and validation', () => {
       expect(mergeSettings(defaultSettings(), { recentExports: 'bad' }).recentExports).toEqual([]);
       const series = parseSettings({
         ...defaultSettings(),
-        recentExports: Array.from({ length: 12 }, (_, index) => ({ ...valid, directory: `/tmp/exports/${index}` })),
+        recentExports: Array.from({ length: 12 }, (_, index) => ({ ...valid, directory: join(exportsRoot, String(index)) })),
       });
       expect(series.recentExports).toHaveLength(10);
     } finally {

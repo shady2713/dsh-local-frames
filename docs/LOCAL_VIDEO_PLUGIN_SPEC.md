@@ -47,7 +47,7 @@
 | R10 | 清理 | 过程文件用完即删；**用户原视频从不删除、移动、改名** | §11 |
 | R11 | 重做与恢复 | 每步可重做；重启后继续；不重复计数；失败的视频与帧可单条或批量手动重试，重试后重新进入处理 | §9、§12.5 |
 | R12 | 页面进度区 | 文件漏斗（含重复跳过数与已跳过数）、处理顺序、错误清单（可单条/批量重试）、暂停/继续/取消、添加视频/目录、任务列表（状态、创建/更新时间、漏斗简要统计、失败数，可直接导出已完成任务）、导出区（对象筛选/zip/分目录）、导出 toast 与打开目录、最近导出记录 | §12.2、§12.4 |
-| R13 | 页面设置区 | 模型池（最多 5 行，每行模型 + 并发 1–8，合计 ≤ 16）、数据目录与上限、预算、抽帧间隔、每批对象数（1–300，默认 40）、允许根目录白名单 | §12.1 |
+| R13 | 页面设置区 | 模型池（最多 5 行，每行模型 + 并发 1–8，合计 ≤ 16）、数据目录与上限、预算、抽帧间隔、每批对象数（1–300，默认 24）、允许根目录白名单 | §12.1 |
 | R14 | agent 工具 | 6 个 `lf_*` 工具，参数和拒绝条件见规格 | §13 |
 | R15 | 规模上限 | 7 表 / 6 工具 / 1 页面 / 1 模型池（最多 5 个模型） / 1 提示词 / 1 任务 / 2 个子进程 | §3.1 |
 | R16 | 安全 | 回环 Host + 同源 Origin + JSON 写接口；密钥与 cookie 不进数据库和日志 | §12.3、§15 |
@@ -282,12 +282,12 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 | `UNSURE` | `UNSURE` |
 | `ABSENT` | `NOT_QUALIFIED` |
 
-**对象表**：按任务对象的稳定顺序（`loadObjects` 按 `targetIds` 顺序），每次调用最多放入 `objectsPerCall` 个对象（每批对象数，整数 1–300，默认 40）；剩余不足一批也要调用。同一帧的对象批次串行执行，全部批次成功后按对象名合并，一次性写入标签，每个任务对象都必须有判决。每批的模型输出必须为该批每个对象给出判决；输出 JSON 缺少任一对象、对象名重复或含多余对象名都算该批无效，不能写库。任一批最终失败则该帧记 `FAILED`，已成功批次的结果不入库；不允许把未判对象当成“没有”、补空判或补零。
+**对象表**：按任务对象的稳定顺序（`loadObjects` 按 `targetIds` 顺序），每次调用最多放入 `objectsPerCall` 个对象（每批对象数，整数 1–300，默认 24）；剩余不足一批也要调用。同一帧的对象批次串行执行，全部批次成功后按对象名合并，一次性写入标签，每个任务对象都必须有判决。每批的模型输出必须为该批每个对象给出判决；输出 JSON 缺少任一对象、对象名重复或含多余对象名都算该批无效，不能写库。任一批最终失败则该帧记 `FAILED`，已成功批次的结果不入库；不允许把未判对象当成“没有”、补空判或补零。
 
 ### 7.5 调用失败与重试
 
 - 以调用的**结束状态**为准：中途收到部分文本、最后报错，也算失败。
-- 每次模型调用带 120 秒超时；超时通过 `AbortSignal` 中止该次调用，并按可重试失败处理。
+- 每次模型调用带超时（`visionCallTimeoutSeconds`，整数 60–300，默认 120 秒；设置页可改，保存后对后续模型调用生效）；超时通过 `AbortSignal` 中止该次调用，并按可重试失败处理。
 - 超时、空响应、限流、服务端错误、网络错误：自动重试。**每批**的模型调用最多 5 次（含首次，即首次 + 至多 4 次重试）；一帧有 K 批时（K = ceil(对象数 / objectsPerCall)，按当前设置和该帧对象数计算），该帧自动尝试总上限为 5K 次。重试间隔优先用模型建议的等待时间，没有就依次 1 秒、5 秒、10 秒、30 秒。重试始终留在该帧已分配的模型上，不做失败切换，不把帧改派给池中的其他模型。
 - 某一批 5 次尝试用尽仍失败：该帧记 `FAILED`，已成功批次的结果不入库；同时按第 8 节的任务级错误处理（连续调用失败计数与暂停），不再继续重试这一帧。
 - 插件启动后第一次调用报“缺凭据”：等 3 秒重试一次。
@@ -324,6 +324,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 
 ## 9. 数量、结束与重做
 
+- 任务状态为 `INGESTING`（入库中）/ `RUNNING` / `PAUSED` / `DONE` / `CANCELLED`。新任务先以 `INGESTING` 建行，导入完成后再转 `RUNNING` 并开始处理；向已有任务追加视频时同样先转 `INGESTING`，导入完成后若原为 `RUNNING` 则回到 `RUNNING` 继续，原为 `PAUSED` 则仍为 `PAUSED`。`INGESTING` 期间调度不得收尾，页面与 `lf_status` 显示“入库中”，但允许取消。
 - 任务开始后处理所有已提交的视频，不做“达标提前结束”。
 - 任务结束条件：所有视频都进入终态（`DONE`、`ERROR` 或 `SKIPPED`），或用户取消。剩余仅为已记录的 `ERROR` 且没有自动重试时，任务直接结束，不无限等待；只剩 `SKIPPED` 时也直接结束。
 - `ERROR` 只在用户点“继续”或页面手动重试时重试；任务不会自动重试 `ERROR` 素材。模型连续调用失败属于任务暂停（§8），与素材 `ERROR` 分开。
@@ -331,6 +332,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 - 重试已 `DONE` 的任务会把任务重新置为 `RUNNING` 并进入处理；若已有其他进行中或暂停的任务则拒绝。凭据无效、额度用尽、没有可用模型服务等不可重试原因直接拒绝并提示，修复后走“继续”。
 - 结束时报告：每个对象 `QUALIFIED` / `UNSURE` / `NOT_QUALIFIED` 数量、文件漏斗（含重复跳过数与已跳过数）、`ERROR` 文件清单、模型调用次数。
 - 重试：只重做出错的文件，已完成的跳过，不重复计数。强制重跑必须显式 `force`（§5.5），并会先清掉该素材在当前任务的帧/标签/调用记录后重做。
+- 进程在入库中途退出时，重启后仍有未完成素材（`NEW`/`PROBED`/`FRAMED`）的 `INGESTING` 任务转回 `RUNNING` 继续；崩溃发生在写入素材之前、没有任何素材的入库任务转 `PAUSED`，两种情况都不会被标成 `DONE`。
 - 每一步都可以重做；重启后自动继续。
 
 ---
@@ -445,9 +447,9 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 
 | 表 | 主要字段 |
 |---|---|
-| `settings` | key, value_json（模型池 `modelPool`（每行 provider/model/concurrency）、磁盘上限、预算、抽帧间隔、导出目录、最近导入路径、允许根目录、最近导出记录 `recentExports`；旧行没有 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移成 1 行；**不含密钥**） |
+| `settings` | key, value_json（模型池 `modelPool`（每行 provider/model/concurrency）、磁盘上限、预算、抽帧间隔、每批对象数 `objectsPerCall`、判定超时 `visionCallTimeoutSeconds`、导出目录、最近导入路径、允许根目录、最近导出记录 `recentExports`；旧行没有 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移成 1 行；**不含密钥**） |
 | `targets` | target_id, name, aliases_json, definition, archived |
-| `tasks` | task_id, spec_json（对象、抽帧参数、预算）, progress_json, status |
+| `tasks` | task_id, spec_json（对象、抽帧参数、预算）, progress_json, status（INGESTING/RUNNING/PAUSED/DONE/CANCELLED） |
 | `items` | item_id, task_id, local_path, file_sha256, file_bytes, title（=文件名）, author, license_raw, region, region_evidence, probe_json, state（NEW/PROBED/FRAMED/DONE/ERROR/SKIPPED）, error_code, attempts |
 | `frames` | frame_id, item_id, t_ms, path（删除后为空）, width, height, dhash（16 位十六进制）, duplicate_of（重复帧指向保留帧）, judge_json, state（PENDING/JUDGED/FAILED/DUPLICATE）, error |
 | `labels` | frame_id, target_id, verdict, visibility, confidence, reason, outcome（QUALIFIED/UNSURE/NOT_QUALIFIED）, call_id |
@@ -472,7 +474,8 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 - 导出目录（绝对路径，默认 `dataDir/exports`；留空表示使用默认目录；保存后重新打开仍显示当前值）；
 - 每任务模型调用预算（默认 3000）；
 - 抽帧间隔（秒，默认 2，范围 1–3600）；
-- 每批对象数（`objectsPerCall`，整数 1–300，默认 40；同一帧按该上限分批串行判定，全部批次成功后才写标签；保存后对后续模型调用生效）；
+- 每批对象数（`objectsPerCall`，整数 1–300，默认 24；同一帧按该上限分批串行判定，全部批次成功后才写标签；保存后对后续模型调用生效）；
+- 判定超时（`visionCallTimeoutSeconds`，整数 60–300，默认 120 秒；与「每批对象数」放在一起，保存后对后续模型调用生效；59、301、小数等非法值拒绝并保持原值；旧设置缺该字段时按 120 迁移）；
 - **允许读取的视频根目录白名单**（可增删；为空时拒绝一切导入）。路径输入框和「保存」一起提交，首次添加即写入 `settings` 并立刻显示在列表中；设置尚未载入时不得静默丢弃，非绝对路径等校验失败要在页面上说明原因；
 - 环境检查区：Node / npm / ffmpeg / ffprobe / DSH / Git 版本，`OK` / `MISSING` / `TOO_OLD` 状态，缺失项的安装提示和“重新检查”按钮（见 §15.1）；
 - 保存立即生效。
@@ -486,7 +489,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 当前任务进度：
 
 - 任务进度与状态；
-- 处理顺序：按导入顺序列出全部视频的序号、文件名和状态（`DONE` / `ERROR` / `SKIPPED` 等）；`SKIPPED` 明确显示“已跳过（先前已处理）”；目录内按路径字典序，批量路径按提交顺序；
+- 任务状态显示为“入库中 / RUNNING / PAUSED / DONE / CANCELLED”，`INGESTING` 必须显示“入库中”而不是完成；处理顺序按导入顺序列出全部视频的序号、文件名和状态（`DONE` / `ERROR` / `SKIPPED` 等）；`SKIPPED` 明确显示“已跳过（先前已处理）”；目录内按路径字典序，批量路径按提交顺序；
 - 文件漏斗：导入数、探测成功数、抽帧数、**重复跳过数**、**已跳过（先前已处理）数**、打标数、可导出帧数、`ERROR` 文件数；
 - `ERROR` 文件清单（路径 + 原因，带单条「重试」和批量「重试全部失败项」）；
 - 失败帧清单（文件名、时间点、原因，带单条「重试」和批量「重试失败帧」）；
@@ -534,7 +537,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 |---|---|---|
 | `lf_status` | 无 | 只读：设置（不含密钥）、对象列表、任务进度、处理顺序、文件漏斗（含重复跳过数与已跳过数）、数据目录占用、环境检查（Node/npm/ffmpeg/ffprobe/DSH/Git 版本与缺失项） |
 | `lf_target_add` | name, aliases, definition | 新建对象；`aliases` 是按语言的别名；同名未归档对象拒绝 |
-| `lf_collect_start` | targetIds?, paths?, force? | 建任务并开始；`targetIds` 省略表示全部未归档对象；`paths` 可同时提交首批视频；`force=true` 才重跑此前已处理的文件；`paths` 为空且任务还没有视频时拒绝；已有进行中/暂停任务、缺模型、缺对象定义、白名单为空、磁盘不够则拒绝并列出缺项 |
+| `lf_collect_start` | targetIds?, paths?, force? | 建任务并开始；`targetIds` 省略表示全部未归档对象；`paths` 可同时提交首批视频；`force=true` 才重跑此前已处理的文件；`paths` 为空且任务还没有视频时拒绝；已有进行中/暂停/入库中任务、缺模型、缺对象定义、白名单为空、磁盘不够则拒绝并列出缺项 |
 | `lf_video_add` | path, recursive?, force? | 提交本地视频文件或目录；按第 5 节校验；默认跳过此前已处理的视频，`force=true` 才重跑；没有进行中或暂停的任务时拒绝并提示先建任务；任务已结束也不能加 |
 | `lf_collect_control` | taskId, action（pause/resume/cancel） | 暂停、继续（含重试 `ERROR` 文件）、取消 |
 | `lf_export` | taskId?, targetIds?, zip?, byObject? | 导出；省略 `taskId` 表示当前任务或最近一个已完成任务；`targetIds` 省略或为空表示任务全部对象（全量导出兼容），传入时只导出所选对象；`zip=true` 生成 zip；`byObject=true` 按对象分目录；只复用已有帧与标签，不抽帧、不调用模型 |
@@ -656,7 +659,7 @@ git --version
 - `ffprobe` 失败、`ffmpeg` 取帧失败记 `ERROR`，不写标签。
 - 帧数公式：默认 2 秒间隔；短视频 1 帧；不设每视频上限；时间点公式。
 - 帧去重：同一张图两次抽到只留先出现的一帧；近似图（轻微压缩/缩放）汉明距离 ≤16 判重；不同画面不误判；跨视频比较；`duplicate_of` 指向正确；重复帧文件被删且模型调用次数不增加；重跑结果一致。
-- 模型：JSON 不合法重试后 `FAILED`；凭据无效与额度用尽直接暂停；部分文本后报错算失败；`TINY` 不算合格；未判对象不写 `ABSENT`；任务对象按 `objectsPerCall` 分批串行判定，全部批次成功后才写标签；超时自动重试且每批尝试次数不超过 5 次、单帧总尝试次数不超过 5K 次；模型池分流生效：每模型在途调用数不超过该行并发、全部模型合计不超过 16，一帧只由一个模型判完（粘性，不投票、不换模型，重试留在原模型）；空池不能开始判定；旧设置缺 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移且旧写入仍可用；超图片限制时缩小；`DUPLICATE` 帧不调用模型。
+- 模型：JSON 不合法重试后 `FAILED`；凭据无效与额度用尽直接暂停；部分文本后报错算失败；`TINY` 不算合格；未判对象不写 `ABSENT`；任务对象按 `objectsPerCall` 分批串行判定，全部批次成功后才写标签；每次判定调用超时按 `visionCallTimeoutSeconds`（60–300 秒，默认 120）执行；超时自动重试且每批尝试次数不超过 5 次、单帧总尝试次数不超过 5K 次；模型池分流生效：每模型在途调用数不超过该行并发、全部模型合计不超过 16，一帧只由一个模型判完（粘性，不投票、不换模型，重试留在原模型）；空池不能开始判定；旧设置缺 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移且旧写入仍可用；超图片限制时缩小；`DUPLICATE` 帧不调用模型。
 - 状态推进：中途中止后重做一步不重复计数；启动时清空 `tmp/`；不可导出帧被删除。
 - 多视频顺序：目录按路径字典序、批量路径按提交顺序导入；进度顺序号稳定；同一顺序重启后不变。
 - 跨任务跳过：同一 SHA-256 在第二个任务默认只插入 `SKIPPED`，不新增帧、不调用模型；进度漏斗和顺序列表显示“已跳过（先前已处理）”。

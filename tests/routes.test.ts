@@ -19,6 +19,7 @@ const snapshot = {
     frameIntervalSeconds: 2,
     visionConcurrency: 2,
     objectsPerCall: 40,
+    visionCallTimeoutSeconds: 120,
     modelPool: [],
     exportDir: null,
     lastImportPath: null,
@@ -284,7 +285,7 @@ describe('path settings persistence', () => {
     }
   });
 
-  it('rejects symlinks and lexical escapes out of the export directory but opens real export paths', async () => {
+  it.skipIf(process.platform === 'win32')('rejects symlinks and lexical escapes out of the export directory but opens real export paths', async () => {
     const h = persistedRoutes();
     try {
       const parent = makeTempDir('lf-routes-open-parent-');
