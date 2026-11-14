@@ -3,7 +3,7 @@ import type { LocalFramesDatabase } from './db.js';
 import { acceptedCount, describeIngest, ingestPaths, type IngestReport } from './ingest.js';
 import { InputError, validateVideoPath } from './input.js';
 import { newId, nowIso } from './ids.js';
-import { exportTask, recentExportFrom, rememberRecentExport } from './export.js';
+import { ExportDirectoryError, exportTask, readExportDirOverride, recentExportFrom, rememberRecentExport } from './export.js';
 import { beginIngest, controlTask, endIngest } from './pipeline.js';
 import type { Pipeline } from './pipeline.js';
 import { emptyProgress } from './progress.js';
@@ -491,7 +491,7 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
   return {
     name: 'lf_export',
     description:
-      'Export qualified frames of a finished task without extracting frames or calling the model. Every run writes a new artifact under the configured export directory (default dataDir/exports): a timestamped directory, or a timestamped zip. Pass targetIds to export only selected objects (labels.csv keeps only those columns); pass byObject for images/<object>/ directories and zip for a zip. Omit taskId for the current or most recently finished task.',
+      'Export qualified frames of a finished task without extracting frames or calling the model. Every run writes a new artifact under the configured export directory (default dataDir/exports): a timestamped directory, or a timestamped zip. Pass targetIds to export only selected objects (labels.csv keeps only those columns); match="all" requires every selected object to be QUALIFIED in the frame (it needs at least one selected object), while the default match="any" keeps the previous behaviour. Pass byObject for images/<object>/ directories and zip for a zip. Pass exportDir (absolute path) to write this export somewhere else without changing the saved setting. Omit taskId for the current or most recently finished task.',
     parameters: {
       type: 'object',
       properties: {
@@ -506,6 +506,17 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
           type: 'boolean',
           description: 'Place images under images/<object directory>/, one copy per matched object (default false)',
         },
+        match: {
+          type: 'string',
+          enum: ['any', 'all'],
+          description:
+            'Frame matching: "any" exports a frame when at least one selected object is QUALIFIED (default); "all" requires every selected object to be QUALIFIED and needs at least one selected object',
+        },
+        exportDir: {
+          type: 'string',
+          description:
+            'Absolute directory for this export only (default: the saved export directory, then dataDir/exports); the saved setting is not changed',
+        },
       },
       additionalProperties: false,
     },
@@ -513,12 +524,25 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
     isConcurrencySafe: () => false,
     async execute(args: unknown): Promise<unknown> {
       const input = asRecord(args);
-      const unknown = unknownKeys(input, ['taskId', 'targetIds', 'zip', 'byObject']);
+      const unknown = unknownKeys(input, ['taskId', 'targetIds', 'zip', 'byObject', 'match', 'exportDir']);
       if (unknown !== null) return fail(unknown);
       if (input.zip !== undefined && typeof input.zip !== 'boolean') return fail('zip 必须是布尔值');
       if (input.byObject !== undefined && typeof input.byObject !== 'boolean') return fail('byObject 必须是布尔值');
+      if (input.match !== undefined && input.match !== 'any' && input.match !== 'all') {
+        return fail('match 必须是 any 或 all');
+      }
+      let exportDirOverride: string | null;
+      try {
+        exportDirOverride = readExportDirOverride(input.exportDir);
+      } catch (error) {
+        if (error instanceof ExportDirectoryError) return fail(error.message);
+        throw error;
+      }
       const targetIds = optionalTargetIds(input.targetIds);
       if (typeof targetIds === 'string') return fail(targetIds);
+      if (input.match === 'all' && (targetIds === null || targetIds.length === 0)) {
+        return fail('全部命中需要至少勾选一个对象');
+      }
       const requested = typeof input.taskId === 'string' ? input.taskId.trim() : '';
       const taskId = requested.length > 0 ? requested : defaultExportTask(deps.db);
       if (taskId === null) return fail('没有可导出的任务');
@@ -527,11 +551,19 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
         | undefined;
       if (typeof existing?.task_id !== 'string') return fail('任务不存在', { task_id: taskId });
       try {
-        const exported = exportTask(deps.db, deps.dataDir, taskId, new Date(), deps.settings.load().exportDir, {
-          targetIds,
-          zip: input.zip === true,
-          byObject: input.byObject === true,
-        });
+        const exported = exportTask(
+          deps.db,
+          deps.dataDir,
+          taskId,
+          new Date(),
+          exportDirOverride ?? deps.settings.load().exportDir,
+          {
+            targetIds,
+            zip: input.zip === true,
+            byObject: input.byObject === true,
+            match: input.match === 'all' ? 'all' : 'any',
+          },
+        );
         const recentExports = rememberRecentExport(deps.settings, recentExportFrom(exported, taskId));
         return ok(`已导出 ${exported.images} 帧到 ${exported.directory}`, {
           task_id: taskId,
@@ -543,6 +575,7 @@ export function createExportTool(deps: ToolDeps): ToolDefinition {
           duplicatesSkipped: exported.duplicatesSkipped,
           zip: exported.zip,
           byObject: exported.byObject,
+          match: exported.match,
           targetIds: exported.targetIds,
           targetNames: exported.targetNames,
           stats: exported.stats,

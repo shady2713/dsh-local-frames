@@ -9,7 +9,7 @@ Call order: `lf_status → lf_target_add → lf_collect_start（可用 paths 传
 - `lf_collect_start` — create and start the single collection task. `targetIds` omitted means every unarchived object; `paths` may carry the first batch of local video paths. Videos already framed and labelled by an earlier task are skipped unless `force: true` is passed explicitly.
 - `lf_video_add` — add one absolute local video file or directory path to the running or paused task. Source files are only read and are never moved, renamed or modified. Already-processed videos are skipped unless `force: true` is passed explicitly.
 - `lf_collect_control` — pause, resume (also retries `ERROR` files) or cancel a task.
-- `lf_export` — export qualified frames of a task: `images/`, `labels.csv`, `sources.csv`, `README.txt`.
+- `lf_export` — export qualified frames of a task: `images/`, `labels.csv`, `sources.csv`, `README.txt`, `stats.json`. `targetIds` selects objects; `match: "any"` (default) exports a frame when at least one selected object is QUALIFIED, `match: "all"` requires every selected object to be QUALIFIED (at least one object must be selected); `exportDir` (absolute path) writes only this export to another directory without changing the saved setting; `zip` and `byObject` are optional.
 
 Rules the agent must keep:
 
