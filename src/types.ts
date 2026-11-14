@@ -55,7 +55,7 @@ export interface Settings {
   recentExports: RecentExport[];
 }
 
-export type TaskStatus = 'RUNNING' | 'PAUSED' | 'DONE' | 'CANCELLED';
+export type TaskStatus = 'INGESTING' | 'RUNNING' | 'PAUSED' | 'DONE' | 'CANCELLED';
 export type ItemState = 'NEW' | 'PROBED' | 'FRAMED' | 'DONE' | 'ERROR' | 'SKIPPED';
 export type FrameState = 'PENDING' | 'JUDGED' | 'FAILED' | 'DUPLICATE';
 export type Verdict = 'PRESENT' | 'ABSENT' | 'UNSURE';

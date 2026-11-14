@@ -113,6 +113,11 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** Task status: an in-progress import must never read as finished. */
+    function taskStatusLabel(status) {
+      return status === 'INGESTING' ? '入库中' : status;
+    }
+
     function LocalFramesPage() {
       const { status, error, setError, reload } = useStatus();
       const { tasks } = useTasks();
@@ -662,7 +667,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'lf-card' },
             h('h3', null, '任务'),
-            Paragraph(task === null || task === undefined ? '当前没有任务' : `${task.task_id} · ${task.status}`),
+            Paragraph(task === null || task === undefined ? '当前没有任务' : `${task.task_id} · ${taskStatusLabel(task.status)}`),
             status?.pause?.reason ? Paragraph(`暂停原因：${status.pause.reason}`) : null,
             funnel
               ? h(
@@ -874,7 +879,7 @@ window.__ModuleLoader__.load({
                         'tr',
                         { key: entry.task_id },
                         h('td', { className: 'lf-toast-path' }, entry.task_id),
-                        h('td', null, entry.status),
+                        h('td', null, taskStatusLabel(entry.status)),
                         h('td', null, formatTime(entry.created_at)),
                         h('td', null, formatTime(entry.updated_at)),
                         h(
@@ -940,7 +945,7 @@ window.__ModuleLoader__.load({
                   onChange: (event) => setExportTaskId(event.target.value === '' ? null : event.target.value),
                 },
                 h('option', { value: '' }, task === null || task === undefined ? '当前任务（无）' : `当前任务（${task.task_id}）`),
-                tasks.map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${entry.status}`)),
+                tasks.map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${taskStatusLabel(entry.status)}`)),
               ),
             ),
             exportTargets.length === 0

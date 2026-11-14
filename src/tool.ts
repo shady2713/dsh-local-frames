@@ -1,10 +1,10 @@
 import { directorySizeBytes, freeDiskGb, DEFAULT_MIN_FREE_DISK_GB } from './disk.js';
 import type { LocalFramesDatabase } from './db.js';
-import { acceptedCount, describeIngest, ingestPaths } from './ingest.js';
+import { acceptedCount, describeIngest, ingestPaths, type IngestReport } from './ingest.js';
 import { InputError, validateVideoPath } from './input.js';
 import { newId, nowIso } from './ids.js';
 import { exportTask, recentExportFrom, rememberRecentExport } from './export.js';
-import { controlTask } from './pipeline.js';
+import { beginIngest, controlTask, endIngest } from './pipeline.js';
 import type { Pipeline } from './pipeline.js';
 import { emptyProgress } from './progress.js';
 import type { SettingsStore } from './settings.js';
@@ -95,7 +95,7 @@ function unknownKeys(input: Record<string, unknown>, allowed: readonly string[])
 function activeTask(db: LocalFramesDatabase): { task_id: string; status: string } | null {
   const row = db.raw
     .prepare(
-      "SELECT task_id, status FROM tasks WHERE status IN ('RUNNING', 'PAUSED') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT task_id, status FROM tasks WHERE status IN ('INGESTING', 'RUNNING', 'PAUSED') ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
     .get() as { task_id?: string; status?: string } | undefined;
   if (typeof row?.task_id !== 'string' || typeof row.status !== 'string') return null;
@@ -145,6 +145,11 @@ function optionalTargetIds(value: unknown): string[] | null | string {
   return ids;
 }
 
+/** Human task status for `lf_status`; INGESTING must never read as finished. */
+export function taskStatusLabel(status: string): string {
+  return status === 'INGESTING' ? '入库中' : status;
+}
+
 function blockingEnvironment(report: { checks: Array<{ blocking: boolean; status: string; label: string; detail: string | null }> }): string[] {
   return report.checks
     .filter((check) => check.blocking && check.status !== 'OK')
@@ -178,7 +183,7 @@ export function createStatusTool(deps: ToolDeps): ToolDefinition {
           `local-frames ${status.plugin.version}`,
           `环境 ${status.environment.ok ? 'OK' : '有问题'}（${okayChecks}/${status.environment.checks.length} 项正常）`,
           `对象 ${status.targets.length}`,
-          status.task === null ? '任务 无' : `任务 ${status.task.status}`,
+          status.task === null ? '任务 无' : `任务 ${taskStatusLabel(status.task.status)}`,
           `数据目录 ${status.dataDir.path}（上限 ${status.dataDir.limitGb} GB）`,
         ];
         if (status.environment.missing.length > 0) {
@@ -281,7 +286,7 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
       if (typeof paths === 'string') return fail(paths);
       const settings = deps.settings.load();
       const missing: string[] = [];
-      if (activeTask(deps.db) !== null) missing.push('已有进行中或暂停的任务');
+      if (activeTask(deps.db) !== null) missing.push('已有进行中或暂停的任务（含入库中）');
       if (settings.modelPool.length === 0) missing.push('未选择模型');
       if (settings.allowRoots.length === 0) missing.push('允许读取的视频根目录白名单为空');
       const selected = selectTargets(deps.db, targetIds.length === 0 ? null : targetIds);
@@ -312,7 +317,10 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
         .prepare(
           'INSERT INTO tasks (task_id, spec_json, progress_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
         )
-        .run(taskId, JSON.stringify(spec), JSON.stringify(emptyProgress()), 'RUNNING', now, now);
+        .run(taskId, JSON.stringify(spec), JSON.stringify(emptyProgress()), 'INGESTING', now, now);
+      // #21: keep the task INGESTING until every path has been imported. A
+      // scheduler tick in between must not see an empty RUNNING task and finish
+      // it, which used to leave the just-inserted items orphaned.
       let report;
       try {
         report = await ingestPaths(
@@ -338,6 +346,10 @@ export function createCollectStartTool(deps: ToolDeps): ToolDefinition {
           existing: report.existing.map((item) => item.itemId),
         });
       }
+      // A cancel during ingest leaves the task CANCELLED; do not resurrect it.
+      deps.db.raw
+        .prepare("UPDATE tasks SET status = 'RUNNING', updated_at = ? WHERE task_id = ? AND status = 'INGESTING'")
+        .run(nowIso(), taskId);
       deps.pipeline.kick();
       return ok(`已开始任务。${describeIngest(report)}`, {
         task_id: taskId,
@@ -392,11 +404,16 @@ export function createVideoAddTool(deps: ToolDeps): ToolDefinition {
         }
         return fail('没有进行中或暂停的任务；请先调用 lf_collect_start 创建任务');
       }
-      if (task.status !== 'RUNNING' && task.status !== 'PAUSED') {
+      if (task.status !== 'RUNNING' && task.status !== 'PAUSED' && task.status !== 'INGESTING') {
         return fail('任务已结束，不能再添加视频', { task_id: task.task_id });
       }
+      // #21: an import into an existing task also pauses the state machine's
+      // finish path. Restore the previous status afterwards (CANCELLED during
+      // ingest wins over the stored status).
+      const restoreStatus = beginIngest(deps.db, task.task_id);
+      let report: IngestReport;
       try {
-        const report = await ingestPaths(
+        report = await ingestPaths(
           deps.db,
           task.task_id,
           deps.dataDir,
@@ -404,34 +421,36 @@ export function createVideoAddTool(deps: ToolDeps): ToolDefinition {
           [{ path: input.path, recursive }],
           { force },
         );
-        if (acceptedCount(report) === 0) {
-          if (report.existing.length > 0 && report.rejected.length === 0) {
-            return fail('已存在', {
-              task_id: task.task_id,
-              item_id: report.existing[0]?.itemId ?? null,
-              path: report.existing[0]?.localPath ?? input.path,
-            });
-          }
-          return fail(report.rejected[0]?.message ?? '没有可用的视频', {
-            code: report.rejected[0]?.code ?? 'EMPTY',
-            rejected: report.rejected,
-          });
-        }
-        deps.pipeline.kick();
-        return ok(describeIngest(report), {
-          task_id: task.task_id,
-          item_ids: [...report.added, ...report.skipped, ...report.rerun].map((item) => item.itemId),
-          added: report.added,
-          skipped: report.skipped,
-          rerun: report.rerun,
-          existing: report.existing,
-          rejected: report.rejected,
-        });
       } catch (error) {
         if (error instanceof InputError) return fail(error.message, { code: error.code });
         deps.log(`lf_video_add 失败：${errorText(error)}`);
         return fail(`lf_video_add 失败：${errorText(error)}`);
+      } finally {
+        endIngest(deps.db, task.task_id, restoreStatus);
       }
+      if (acceptedCount(report) === 0) {
+        if (report.existing.length > 0 && report.rejected.length === 0) {
+          return fail('已存在', {
+            task_id: task.task_id,
+            item_id: report.existing[0]?.itemId ?? null,
+            path: report.existing[0]?.localPath ?? input.path,
+          });
+        }
+        return fail(report.rejected[0]?.message ?? '没有可用的视频', {
+          code: report.rejected[0]?.code ?? 'EMPTY',
+          rejected: report.rejected,
+        });
+      }
+      deps.pipeline.kick();
+      return ok(describeIngest(report), {
+        task_id: task.task_id,
+        item_ids: [...report.added, ...report.skipped, ...report.rerun].map((item) => item.itemId),
+        added: report.added,
+        skipped: report.skipped,
+        rerun: report.rerun,
+        existing: report.existing,
+        rejected: report.rejected,
+      });
     },
   };
 }
