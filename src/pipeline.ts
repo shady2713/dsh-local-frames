@@ -442,6 +442,7 @@ export class Pipeline {
           entry.frame,
           targets,
           settings.objectsPerCall,
+          settings.visionCallTimeoutSeconds * 1000,
           entry.provider,
           entry.model,
           entry.modelName,
@@ -551,7 +552,8 @@ export class Pipeline {
   /**
    * Judge one frame in serial batches of at most `objectsPerCall` objects.
    *
-   * Every batch goes through {@link judgeBatch} with its own 120-second timeout
+   * Every batch goes through {@link judgeBatch} with its own configured timeout
+   * (the `visionCallTimeoutSeconds` setting, default 120 seconds)
    * and at most five attempts. The per-frame automatic-attempt limit is five per
    * batch (`5 × ceil(objects / objectsPerCall)`), persisted in `calls`, so a
    * restart cannot hand the same frame a fresh budget. A batch that exhausts its
@@ -563,6 +565,7 @@ export class Pipeline {
     frame: { frame_id: string; path: string },
     targets: readonly PromptObject[],
     objectsPerCall: number,
+    visionTimeoutMs: number,
     provider: string,
     model: string,
     modelName: string,
@@ -592,6 +595,7 @@ export class Pipeline {
           objects: batch,
           imagePath: frame.path,
           taskId: task.task_id,
+          timeoutMs: visionTimeoutMs,
           sleep: (ms) => this.sleep(ms),
           // Never hand the whole frame's remaining budget to one batch: a batch
           // is capped at five attempts, and the frame cap only shrinks it when

@@ -129,6 +129,7 @@ window.__ModuleLoader__.load({
       const [poolDirty, setPoolDirty] = React.useState(false);
       const poolSyncedRef = React.useRef('');
       const [objectsPerCall, setObjectsPerCall] = React.useState('40');
+      const [visionCallTimeout, setVisionCallTimeout] = React.useState('120');
       const [exportDir, setExportDir] = React.useState('');
       const [root, setRoot] = React.useState('');
       const [message, setMessage] = React.useState('');
@@ -153,6 +154,7 @@ window.__ModuleLoader__.load({
         setBudget(String(status.settings.budgetPerTask));
         setIntervalSeconds(String(status.settings.frameIntervalSeconds));
         setObjectsPerCall(String(status.settings.objectsPerCall));
+        setVisionCallTimeout(String(status.settings.visionCallTimeoutSeconds));
         setExportDir(status.settings.exportDir ?? '');
       }, [status]);
       // The model list is the editable copy; the status snapshot syncs it back
@@ -295,6 +297,7 @@ window.__ModuleLoader__.load({
             budgetPerTask: Number(budget),
             frameIntervalSeconds: Number(interval),
             objectsPerCall: Number(objectsPerCall),
+            visionCallTimeoutSeconds: Number(visionCallTimeout),
             exportDir: dir.length > 0 ? dir : null,
             allowRoots: nextRoot.length > 0 ? [...settings.allowRoots, nextRoot] : settings.allowRoots,
           },
@@ -540,6 +543,18 @@ window.__ModuleLoader__.load({
                   max: 300,
                   value: objectsPerCall,
                   onChange: (event) => setObjectsPerCall(event.target.value),
+                }),
+              ),
+              h(
+                'label',
+                { className: 'lf-field' },
+                '判定超时（60–300 秒）',
+                h('input', {
+                  type: 'number',
+                  min: 60,
+                  max: 300,
+                  value: visionCallTimeout,
+                  onChange: (event) => setVisionCallTimeout(event.target.value),
                 }),
               ),
               h('button', { className: 'lf-button', type: 'button', onClick: saveSettings }, '保存'),

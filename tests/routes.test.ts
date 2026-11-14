@@ -19,6 +19,7 @@ const snapshot = {
     frameIntervalSeconds: 2,
     visionConcurrency: 2,
     objectsPerCall: 40,
+    visionCallTimeoutSeconds: 120,
     modelPool: [],
     exportDir: null,
     lastImportPath: null,

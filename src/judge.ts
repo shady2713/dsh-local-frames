@@ -33,7 +33,7 @@ export type JudgeBatch =
   | { ok: false; reason: 'format' | 'call'; message: string; attempts: JudgeAttempt[] };
 
 const FORMAT_WAITS_MS = [1000, 5000];
-/** §7.5: one model call is aborted after this long and treated as retryable. */
+/** §7.5: default timeout of one model call; the task setting overrides it. */
 export const VISION_CALL_TIMEOUT_MS = 120_000;
 /** §7.5: total attempts for one batch, including the first call. */
 export const MAX_ATTEMPTS_PER_FRAME = 5;

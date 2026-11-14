@@ -287,7 +287,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 ### 7.5 调用失败与重试
 
 - 以调用的**结束状态**为准：中途收到部分文本、最后报错，也算失败。
-- 每次模型调用带 120 秒超时；超时通过 `AbortSignal` 中止该次调用，并按可重试失败处理。
+- 每次模型调用带超时（`visionCallTimeoutSeconds`，整数 60–300，默认 120 秒；设置页可改，保存后对后续模型调用生效）；超时通过 `AbortSignal` 中止该次调用，并按可重试失败处理。
 - 超时、空响应、限流、服务端错误、网络错误：自动重试。**每批**的模型调用最多 5 次（含首次，即首次 + 至多 4 次重试）；一帧有 K 批时（K = ceil(对象数 / objectsPerCall)，按当前设置和该帧对象数计算），该帧自动尝试总上限为 5K 次。重试间隔优先用模型建议的等待时间，没有就依次 1 秒、5 秒、10 秒、30 秒。重试始终留在该帧已分配的模型上，不做失败切换，不把帧改派给池中的其他模型。
 - 某一批 5 次尝试用尽仍失败：该帧记 `FAILED`，已成功批次的结果不入库；同时按第 8 节的任务级错误处理（连续调用失败计数与暂停），不再继续重试这一帧。
 - 插件启动后第一次调用报“缺凭据”：等 3 秒重试一次。
@@ -447,7 +447,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 
 | 表 | 主要字段 |
 |---|---|
-| `settings` | key, value_json（模型池 `modelPool`（每行 provider/model/concurrency）、磁盘上限、预算、抽帧间隔、导出目录、最近导入路径、允许根目录、最近导出记录 `recentExports`；旧行没有 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移成 1 行；**不含密钥**） |
+| `settings` | key, value_json（模型池 `modelPool`（每行 provider/model/concurrency）、磁盘上限、预算、抽帧间隔、每批对象数 `objectsPerCall`、判定超时 `visionCallTimeoutSeconds`、导出目录、最近导入路径、允许根目录、最近导出记录 `recentExports`；旧行没有 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移成 1 行；**不含密钥**） |
 | `targets` | target_id, name, aliases_json, definition, archived |
 | `tasks` | task_id, spec_json（对象、抽帧参数、预算）, progress_json, status（INGESTING/RUNNING/PAUSED/DONE/CANCELLED） |
 | `items` | item_id, task_id, local_path, file_sha256, file_bytes, title（=文件名）, author, license_raw, region, region_evidence, probe_json, state（NEW/PROBED/FRAMED/DONE/ERROR/SKIPPED）, error_code, attempts |
@@ -475,6 +475,7 @@ ffmpeg -hide_banner -loglevel error -ss <秒> -i <本地路径> -frames:v 1 -pix
 - 每任务模型调用预算（默认 3000）；
 - 抽帧间隔（秒，默认 2，范围 1–3600）；
 - 每批对象数（`objectsPerCall`，整数 1–300，默认 40；同一帧按该上限分批串行判定，全部批次成功后才写标签；保存后对后续模型调用生效）；
+- 判定超时（`visionCallTimeoutSeconds`，整数 60–300，默认 120 秒；与「每批对象数」放在一起，保存后对后续模型调用生效；59、301、小数等非法值拒绝并保持原值；旧设置缺该字段时按 120 迁移）；
 - **允许读取的视频根目录白名单**（可增删；为空时拒绝一切导入）。路径输入框和「保存」一起提交，首次添加即写入 `settings` 并立刻显示在列表中；设置尚未载入时不得静默丢弃，非绝对路径等校验失败要在页面上说明原因；
 - 环境检查区：Node / npm / ffmpeg / ffprobe / DSH / Git 版本，`OK` / `MISSING` / `TOO_OLD` 状态，缺失项的安装提示和“重新检查”按钮（见 §15.1）；
 - 保存立即生效。
@@ -658,7 +659,7 @@ git --version
 - `ffprobe` 失败、`ffmpeg` 取帧失败记 `ERROR`，不写标签。
 - 帧数公式：默认 2 秒间隔；短视频 1 帧；不设每视频上限；时间点公式。
 - 帧去重：同一张图两次抽到只留先出现的一帧；近似图（轻微压缩/缩放）汉明距离 ≤16 判重；不同画面不误判；跨视频比较；`duplicate_of` 指向正确；重复帧文件被删且模型调用次数不增加；重跑结果一致。
-- 模型：JSON 不合法重试后 `FAILED`；凭据无效与额度用尽直接暂停；部分文本后报错算失败；`TINY` 不算合格；未判对象不写 `ABSENT`；任务对象按 `objectsPerCall` 分批串行判定，全部批次成功后才写标签；超时自动重试且每批尝试次数不超过 5 次、单帧总尝试次数不超过 5K 次；模型池分流生效：每模型在途调用数不超过该行并发、全部模型合计不超过 16，一帧只由一个模型判完（粘性，不投票、不换模型，重试留在原模型）；空池不能开始判定；旧设置缺 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移且旧写入仍可用；超图片限制时缩小；`DUPLICATE` 帧不调用模型。
+- 模型：JSON 不合法重试后 `FAILED`；凭据无效与额度用尽直接暂停；部分文本后报错算失败；`TINY` 不算合格；未判对象不写 `ABSENT`；任务对象按 `objectsPerCall` 分批串行判定，全部批次成功后才写标签；每次判定调用超时按 `visionCallTimeoutSeconds`（60–300 秒，默认 120）执行；超时自动重试且每批尝试次数不超过 5 次、单帧总尝试次数不超过 5K 次；模型池分流生效：每模型在途调用数不超过该行并发、全部模型合计不超过 16，一帧只由一个模型判完（粘性，不投票、不换模型，重试留在原模型）；空池不能开始判定；旧设置缺 `modelPool` 时按旧 `model` + `visionConcurrency` 迁移且旧写入仍可用；超图片限制时缩小；`DUPLICATE` 帧不调用模型。
 - 状态推进：中途中止后重做一步不重复计数；启动时清空 `tmp/`；不可导出帧被删除。
 - 多视频顺序：目录按路径字典序、批量路径按提交顺序导入；进度顺序号稳定；同一顺序重启后不变。
 - 跨任务跳过：同一 SHA-256 在第二个任务默认只插入 `SKIPPED`，不新增帧、不调用模型；进度漏斗和顺序列表显示“已跳过（先前已处理）”。

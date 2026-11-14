@@ -44,6 +44,8 @@ export interface Settings {
   visionConcurrency: number;
   /** Maximum objects sent in one model call; a frame is judged in serial batches. */
   objectsPerCall: number;
+  /** Timeout of one vision model call in seconds; an aborted call is retried. */
+  visionCallTimeoutSeconds: number;
   /** Authoritative model pool; every frame is judged by exactly one of these models. */
   modelPool: ModelPoolEntry[];
   /** Absolute export directory; null means the default `<dataDir>/exports`. */
