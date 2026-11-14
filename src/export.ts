@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, linkSync, mkdirSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, copyFileSync, existsSync, linkSync, mkdirSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, normalize, resolve } from 'node:path';
 import { removeOwnedFrame } from './cleanup.js';
 import type { LocalFramesDatabase } from './db.js';
@@ -173,16 +173,45 @@ export class ExportSelectionError extends Error {
   }
 }
 
+/** A one-off export directory that is unusable: absolute-path or write-access problem. */
+export class ExportDirectoryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ExportDirectoryError';
+  }
+}
+
+/**
+ * Validate the optional per-export directory override. `null`/blank means
+ * "use the configured export directory"; otherwise the value must be an
+ * absolute path. The returned path is normalized but not resolved against
+ * outside state, so the caller still owns creation and write-access errors.
+ */
+export function readExportDirOverride(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') throw new ExportDirectoryError('本次导出目录必须是绝对路径');
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > 4096) throw new ExportDirectoryError('本次导出目录最多 4096 个字符');
+  if (!isAbsolute(trimmed)) throw new ExportDirectoryError(`本次导出目录必须是绝对路径：${trimmed}`);
+  return resolve(normalize(trimmed));
+}
+
+/** How frame labels are matched against the selected objects. */
+export type MatchMode = 'any' | 'all';
+
 export interface ExportOptions {
-  /** Object ids to include; null or empty means every object selected by the task. */
+  /** Object ids to include; null or empty means every object selected by the task (`any` only). */
   targetIds: readonly string[] | null;
   /** Write `<导出目录>/<时间>.zip` instead of a directory. */
   zip: boolean;
   /** Place images under `images/<object directory>/`. */
   byObject: boolean;
+  /** `any`: a frame exports when at least one selected object is QUALIFIED; `all`: every one must be. */
+  match: MatchMode;
 }
 
-const DEFAULT_EXPORT_OPTIONS: ExportOptions = { targetIds: null, zip: false, byObject: false };
+const DEFAULT_EXPORT_OPTIONS: ExportOptions = { targetIds: null, zip: false, byObject: false, match: 'any' };
 
 export interface ExportTargetStats {
   target_id: string;
@@ -197,6 +226,7 @@ export interface ExportStats {
   task_status: string;
   exported_at: string;
   mode: 'full' | 'selected';
+  match: MatchMode;
   zip: boolean;
   by_object: boolean;
   selected_targets: ExportTargetStats[];
@@ -221,6 +251,7 @@ export interface ExportResult {
   duplicatesSkipped: number;
   zip: boolean;
   byObject: boolean;
+  match: MatchMode;
   targetIds: string[];
   targetNames: string[];
   imageCopies: number;
@@ -277,6 +308,9 @@ export function exportTask(
   options: Partial<ExportOptions> = {},
 ): ExportResult {
   const chosen: ExportOptions = { ...DEFAULT_EXPORT_OPTIONS, ...options };
+  if (chosen.match !== 'any' && chosen.match !== 'all') {
+    throw new ExportSelectionError('match 必须是 any 或 all');
+  }
   if (chosen.targetIds !== null && chosen.targetIds.length > 100) {
     throw new ExportSelectionError('一次最多选择 100 个对象');
   }
@@ -284,6 +318,9 @@ export function exportTask(
     for (const id of chosen.targetIds) {
       if (typeof id !== 'string' || id.trim().length === 0) throw new ExportSelectionError('对象 id 无效');
     }
+  }
+  if (chosen.match === 'all' && (chosen.targetIds === null || chosen.targetIds.length === 0)) {
+    throw new ExportSelectionError('全部命中需要至少勾选一个对象');
   }
   const task = db.raw.prepare('SELECT spec_json, progress_json, status FROM tasks WHERE task_id = ?').get(taskId) as
     | { spec_json?: string; progress_json?: string; status?: string }
@@ -301,6 +338,20 @@ export function exportTask(
 
   const targetPlaceholders = targets.map(() => '?').join(',');
   const filterClause = filtered ? ` AND labels.target_id IN (${targetPlaceholders})` : '';
+  // `all` additionally requires every selected object to be QUALIFIED in the frame.
+  const allClause =
+    chosen.match === 'all'
+      ? ` AND (SELECT COUNT(DISTINCT all_labels.target_id) FROM labels AS all_labels
+              WHERE all_labels.frame_id = frames.frame_id
+                AND all_labels.outcome = 'QUALIFIED'
+                AND all_labels.target_id IN (${targetPlaceholders})) = ?`
+      : '';
+  const frameParams: Array<string | number> = [taskId];
+  if (filtered) frameParams.push(...targets.map((target) => target.target_id));
+  if (chosen.match === 'all') {
+    // The allClause repeats the selected ids and ends with the expected distinct count.
+    frameParams.push(...targets.map((target) => target.target_id), targets.length);
+  }
   const frames = db.raw
     .prepare(
       `SELECT frames.frame_id, frames.t_ms, frames.path,
@@ -313,10 +364,10 @@ export function exportTask(
          AND frames.path IS NOT NULL
          AND EXISTS (
            SELECT 1 FROM labels WHERE labels.frame_id = frames.frame_id AND labels.outcome = 'QUALIFIED'${filterClause}
-         )
+         )${allClause}
        ORDER BY items.created_at ASC, items.rowid ASC, frames.t_ms ASC, frames.rowid ASC`,
     )
-    .all(taskId, ...(filtered ? targets.map((target) => target.target_id) : [])) as unknown as ExportFrame[];
+    .all(...frameParams) as unknown as ExportFrame[];
 
   const duplicateRow = db.raw
     .prepare(
@@ -327,9 +378,18 @@ export function exportTask(
     .get(taskId) as { count?: number } | undefined;
   const duplicatesSkipped = typeof duplicateRow?.count === 'number' ? duplicateRow.count : 0;
 
-  if (exportDir !== null && !isAbsolute(exportDir)) throw new Error('导出目录必须是绝对路径');
-  const exportsRoot = exportDir === null ? resolve(dataDir, 'exports') : resolve(normalize(exportDir));
-  mkdirSync(exportsRoot, { recursive: true });
+  if (exportDir !== null && exportDir !== undefined && exportDir.trim().length > 0 && !isAbsolute(exportDir)) {
+    throw new ExportDirectoryError('导出目录必须是绝对路径');
+  }
+  const override = typeof exportDir === 'string' && exportDir.trim().length > 0 ? resolve(normalize(exportDir)) : null;
+  const exportsRoot = override ?? resolve(dataDir, 'exports');
+  try {
+    mkdirSync(exportsRoot, { recursive: true });
+    accessSync(exportsRoot, constants.W_OK);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new ExportDirectoryError(`导出目录不可创建或不可写：${exportsRoot}（${reason}）`);
+  }
   const baseStamp = stamp(now);
   // The zip path is reserved here; writeZip creates it with `wx` and never overwrites.
   const artifact = chosen.zip ? uniqueZipPath(exportsRoot, baseStamp) : createExportDirectory(exportsRoot, baseStamp);
@@ -398,6 +458,8 @@ export function exportTask(
     const qualified = targets.filter((target) => frameLabels?.get(target.target_id)?.outcome === 'QUALIFIED');
     // Full exports keep the previous behaviour (every qualified frame); selections are already filtered in SQL.
     if (filtered && qualified.length === 0) continue;
+    // Safety net for `all`: the SQL already requires it, but never emit a partial match.
+    if (chosen.match === 'all' && qualified.length !== targets.length) continue;
     const primary = qualified[0];
     const labelName = primary?.directory === null || primary?.directory === undefined
       ? fileName
@@ -462,6 +524,7 @@ export function exportTask(
     task_status: typeof task.status === 'string' ? task.status : 'UNKNOWN',
     exported_at: now.toISOString(),
     mode: filtered ? 'selected' : 'full',
+    match: chosen.match,
     zip: chosen.zip,
     by_object: chosen.byObject,
     selected_targets: selectedTargetStats,
@@ -506,6 +569,7 @@ export function exportTask(
     targets: selectedTargetStats,
     filtered,
     taskTargetCount: taskTargets.length,
+    match: chosen.match,
     byObject: chosen.byObject,
     zip: chosen.zip,
     perTarget,
@@ -541,6 +605,7 @@ export function exportTask(
     duplicatesSkipped,
     zip: chosen.zip,
     byObject: chosen.byObject,
+    match: chosen.match,
     targetIds: exportedTargetIds,
     targetNames: exportedTargetNames,
     imageCopies,
@@ -592,6 +657,7 @@ function renderReadme(input: {
   targets: ExportTargetStats[];
   filtered: boolean;
   taskTargetCount: number;
+  match: MatchMode;
   byObject: boolean;
   zip: boolean;
   perTarget: Map<string, { qualified: number; unsure: number; absent: number }>;
@@ -615,6 +681,7 @@ function renderReadme(input: {
     `导出对象：${input.targets.map((target) => target.name).join('、') || '（无）'}${
       input.filtered ? `（从任务的 ${input.taskTargetCount} 个对象中筛选）` : '（任务全部对象）'
     }`,
+    `匹配方式：${input.match === 'all' ? '全部命中（且）' : '任一命中（或）'}`,
     `导出格式：${input.zip ? 'zip' : '目录'}`,
     '统计报表：stats.json（统计各对象合格帧数、抽帧/去重/打标数以及 train/val 划分）',
   ];
