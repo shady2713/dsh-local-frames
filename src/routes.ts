@@ -2,7 +2,14 @@ import { realpathSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, isAbsolute, normalize, resolve, sep } from 'node:path';
 import type { LocalFramesDatabase } from './db.js';
-import { ExportSelectionError, exportTask, recentExportFrom, rememberRecentExport } from './export.js';
+import {
+  ExportDirectoryError,
+  ExportSelectionError,
+  exportTask,
+  readExportDirOverride,
+  recentExportFrom,
+  rememberRecentExport,
+} from './export.js';
 import { HttpError, guard, readJsonBody, requireMethod, sendJson } from './http.js';
 import { describeIngest, acceptedCount, ingestPaths } from './ingest.js';
 import { nowIso } from './ids.js';
@@ -255,6 +262,16 @@ export function createRoutes(
       if (record.byObject !== undefined && typeof record.byObject !== 'boolean') {
         throw new HttpError(400, 'INVALID_BODY', 'byObject 必须是布尔值');
       }
+      if (record.match !== undefined && record.match !== 'any' && record.match !== 'all') {
+        throw new HttpError(400, 'INVALID_BODY', 'match 必须是 any 或 all');
+      }
+      let exportDirOverride: string | null;
+      try {
+        exportDirOverride = readExportDirOverride(record.exportDir);
+      } catch (error) {
+        if (error instanceof ExportDirectoryError) throw new HttpError(400, 'INVALID_EXPORT_DIR', error.message);
+        throw error;
+      }
       let targetIds: string[] | null = null;
       if (record.targetIds !== undefined) {
         if (!Array.isArray(record.targetIds) || record.targetIds.length > 100) {
@@ -274,13 +291,22 @@ export function createRoutes(
       if (taskId === null) throw new HttpError(404, 'NO_TASK', '没有可导出的任务');
       let exported;
       try {
-        exported = exportTask(services.db, services.dataDir, taskId, new Date(), services.settings.load().exportDir, {
-          targetIds,
-          zip: record.zip === true,
-          byObject: record.byObject === true,
-        });
+        exported = exportTask(
+          services.db,
+          services.dataDir,
+          taskId,
+          new Date(),
+          exportDirOverride ?? services.settings.load().exportDir,
+          {
+            targetIds,
+            zip: record.zip === true,
+            byObject: record.byObject === true,
+            match: record.match === 'all' ? 'all' : 'any',
+          },
+        );
       } catch (error) {
         if (error instanceof ExportSelectionError) throw new HttpError(400, 'INVALID_TARGETS', error.message);
+        if (error instanceof ExportDirectoryError) throw new HttpError(400, 'INVALID_EXPORT_DIR', error.message);
         throw new HttpError(500, 'EXPORT_FAILED', error instanceof Error ? error.message : String(error));
       }
       const recentExports = rememberRecentExport(services.settings, recentExportFrom(exported, taskId));
@@ -296,13 +322,23 @@ export function createRoutes(
       }
       const requested = body.path.trim();
       if (!isAbsolute(requested)) throw new HttpError(400, 'INVALID_PATH', 'path 必须是绝对路径');
-      const exportRoot = services.settings.load().exportDir ?? resolve(services.dataDir, 'exports');
+      const currentSettings = services.settings.load();
+      const exportRoot = currentSettings.exportDir ?? resolve(services.dataDir, 'exports');
+      // Allowed roots: the configured export root plus every artifact recorded in
+      // recentExports (its directory, or the directory containing a recorded zip).
+      // Without the second source a per-export `exportDir` override would produce
+      // artifacts that the page can never open again.
+      const allowedRoots: string[] = [resolve(normalize(exportRoot))];
+      for (const record of currentSettings.recentExports) {
+        const recorded = resolve(normalize(record.directory));
+        allowedRoots.push(record.zip ? dirname(recorded) : recorded);
+      }
+      const inside = (path: string, root: string): boolean => path === root || path.startsWith(`${root}${sep}`);
       const target = resolve(normalize(requested));
-      const root = resolve(normalize(exportRoot));
-      if (target !== root && !target.startsWith(`${root}${sep}`)) {
+      if (!allowedRoots.some((root) => inside(target, root))) {
         throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
       }
-      // A lexical prefix check is not enough: a symlink inside exportDir can
+      // A lexical prefix check is not enough: a symlink inside an export root can
       // resolve anywhere. Re-check the canonical paths and open the canonical
       // result, so a link swapped after the check cannot change the target.
       let canonical: string;
@@ -311,13 +347,18 @@ export function createRoutes(
       } catch {
         throw new HttpError(404, 'NOT_FOUND', '导出结果不存在');
       }
-      let canonicalRoot: string;
-      try {
-        canonicalRoot = realpathSync(root);
-      } catch {
+      const canonicalRoots: string[] = [];
+      for (const root of allowedRoots) {
+        try {
+          canonicalRoots.push(realpathSync(root));
+        } catch {
+          // A deleted or never-created root authorizes nothing.
+        }
+      }
+      if (canonicalRoots.length === 0) {
         throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
       }
-      const insideRoot = (path: string): boolean => path === canonicalRoot || path.startsWith(`${canonicalRoot}${sep}`);
+      const insideRoot = (path: string): boolean => canonicalRoots.some((root) => inside(path, root));
       if (!insideRoot(canonical)) {
         throw new HttpError(403, 'FORBIDDEN_PATH', '只能打开导出目录内的导出结果');
       }
