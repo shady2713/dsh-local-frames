@@ -10,7 +10,7 @@ export const MAX_RECENT_EXPORTS = 10;
 /**
  * Defaults fixed by the specification (§12.1): an empty model pool (judging is
  * paused until the user adds a model), a 3000-call budget per task, a 2-second
- * frame interval, 40 objects per call, a 120-second call timeout and an empty
+ * frame interval, 24 objects per call, a 120-second call timeout and an empty
  * allowlist, which rejects every import until configured.
  *
  * The data-directory cap default is not stated by the specification; it is
@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
   budgetPerTask: 3000,
   frameIntervalSeconds: 2,
   visionConcurrency: 2,
-  objectsPerCall: 40,
+  objectsPerCall: 24,
   visionCallTimeoutSeconds: 120,
   modelPool: [],
   exportDir: null,

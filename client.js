@@ -128,7 +128,7 @@ window.__ModuleLoader__.load({
       const [poolRows, setPoolRows] = React.useState([]);
       const [poolDirty, setPoolDirty] = React.useState(false);
       const poolSyncedRef = React.useRef('');
-      const [objectsPerCall, setObjectsPerCall] = React.useState('40');
+      const [objectsPerCall, setObjectsPerCall] = React.useState('24');
       const [visionCallTimeout, setVisionCallTimeout] = React.useState('120');
       const [exportDir, setExportDir] = React.useState('');
       const [root, setRoot] = React.useState('');
