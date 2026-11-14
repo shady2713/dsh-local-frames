@@ -140,6 +140,8 @@ window.__ModuleLoader__.load({
       const [exportTaskId, setExportTaskId] = React.useState(null);
       const [exportZip, setExportZip] = React.useState(false);
       const [exportByObject, setExportByObject] = React.useState(false);
+      const [exportMatch, setExportMatch] = React.useState('any');
+      const [exportRunDir, setExportRunDir] = React.useState('');
       const [exporting, setExporting] = React.useState(false);
       const [toast, setToast] = React.useState(null);
       const lastPathFilled = React.useRef(false);
@@ -157,6 +159,11 @@ window.__ModuleLoader__.load({
         setVisionCallTimeout(String(status.settings.visionCallTimeoutSeconds));
         setExportDir(status.settings.exportDir ?? '');
       }, [status]);
+      // The export card's directory defaults to the saved setting; user edits
+      // survive status polling because this effect only runs when the setting changes.
+      React.useEffect(() => {
+        setExportRunDir(status?.settings?.exportDir ?? '');
+      }, [status?.settings?.exportDir]);
       // The model list is the editable copy; the status snapshot syncs it back
       // after a save. Unsaved edits win over the 3-second status polling.
       React.useEffect(() => {
@@ -304,7 +311,7 @@ window.__ModuleLoader__.load({
           { clearRoot: nextRoot.length > 0 },
         );
       };
-      const performExport = (taskId, targetIds) => {
+      const performExport = (taskId, targetIds, options = {}) => {
         if (exporting) return;
         setExporting(true);
         setMessage('');
@@ -312,6 +319,8 @@ window.__ModuleLoader__.load({
         const body = { zip: exportZip, byObject: exportByObject };
         if (typeof taskId === 'string' && taskId.length > 0) body.taskId = taskId;
         if (Array.isArray(targetIds) && targetIds.length > 0) body.targetIds = targetIds;
+        if (options.match === 'any' || options.match === 'all') body.match = options.match;
+        if (typeof options.exportDir === 'string' && options.exportDir.length > 0) body.exportDir = options.exportDir;
         request('/api/local-frames/export', body)
           .then((payload) => {
             const data = payload.data ?? {};
@@ -328,7 +337,19 @@ window.__ModuleLoader__.load({
           .finally(() => setExporting(false));
       };
       const runExport = () => {
-        performExport(selectedExportTask?.task_id ?? task?.task_id ?? null, selectedTargets);
+        const dir = exportRunDir.trim();
+        if (dir.length > 0 && !isAbsolutePath(dir)) {
+          setError(`本次导出目录必须是绝对路径：${dir}`);
+          return;
+        }
+        if (exportMatch === 'all' && selectedTargets.length === 0) {
+          setError('全部命中需要至少勾选一个对象');
+          return;
+        }
+        performExport(selectedExportTask?.task_id ?? task?.task_id ?? null, selectedTargets, {
+          match: exportMatch,
+          exportDir: dir,
+        });
       };
       const exportFromList = (taskId) => {
         setExportTaskId(taskId);
@@ -948,7 +969,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'lf-card' },
-            Paragraph('只复用已完成任务的帧与标签，不重新抽帧、不调用模型；不勾选对象时导出任务全部对象。'),
+            Paragraph('只复用已完成任务的帧与标签，不重新抽帧、不调用模型；任一命中且不勾选对象时导出任务全部对象。'),
             h(
               'label',
               { className: 'lf-field' },
@@ -962,6 +983,48 @@ window.__ModuleLoader__.load({
                 h('option', { value: '' }, task === null || task === undefined ? '当前任务（无）' : `当前任务（${task.task_id}）`),
                 tasks.map((entry) => h('option', { key: entry.task_id, value: entry.task_id }, `${entry.task_id} · ${taskStatusLabel(entry.status)}`)),
               ),
+            ),
+            h(
+              'label',
+              { className: 'lf-field' },
+              '本次导出目录（绝对路径）',
+              h('input', {
+                value: exportRunDir,
+                placeholder: `留空使用 ${settings?.exportDir ?? defaultExportDir}`,
+                onChange: (event) => setExportRunDir(event.target.value),
+              }),
+            ),
+            h(
+              'div',
+              { className: 'lf-row' },
+              h('span', null, '匹配方式'),
+              h(
+                'label',
+                { className: 'lf-check' },
+                h('input', {
+                  type: 'radio',
+                  name: 'lf-export-match',
+                  checked: exportMatch === 'any',
+                  onChange: () => setExportMatch('any'),
+                }),
+                '任一命中（或）',
+              ),
+              h(
+                'label',
+                { className: 'lf-check' },
+                h('input', {
+                  type: 'radio',
+                  name: 'lf-export-match',
+                  checked: exportMatch === 'all',
+                  onChange: () => setExportMatch('all'),
+                }),
+                '全部命中（且）',
+              ),
+            ),
+            h(
+              'p',
+              { className: 'lf-hint' },
+              '「全部命中」要求每个勾选对象都在该帧中合格，需要至少勾选一个对象。',
             ),
             exportTargets.length === 0
               ? Paragraph('所选任务没有可导出的对象。')
@@ -1002,7 +1065,7 @@ window.__ModuleLoader__.load({
               ),
               h('button', { className: 'lf-button', type: 'button', disabled: exporting, onClick: runExport }, exporting ? '导出中…' : '导出'),
             ),
-            Paragraph('每次导出都新建目录或 zip，不会覆盖之前的导出；写入页面设置区配置的导出目录。'),
+            Paragraph('每次导出都新建目录或 zip，不会覆盖之前的导出；可临时指定本次导出目录，留空时使用页面设置区配置的导出目录。'),
           ),
           h(
             'div',
