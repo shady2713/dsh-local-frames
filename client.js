@@ -1,8 +1,82 @@
+/**
+ * Pure export-request planning shared by the export card and the task-list
+ * row buttons. Both entry points must follow the same options and validation.
+ * A factory keeps these helper names out of the page's global scope while
+ * still letting tests exercise the exact implementation the UI calls.
+ */
+function lfExportRequestHelpers() {
+  function isAbsolutePath(value) {
+    return value.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(value);
+  }
+
+  function normalizeTargetIds(targetIds) {
+    return Array.isArray(targetIds)
+      ? targetIds.filter((targetId) => typeof targetId === 'string' && targetId.length > 0)
+      : [];
+  }
+
+  function buildExportRequest(input) {
+    const dir = typeof input.exportDir === 'string' ? input.exportDir.trim() : '';
+    if (dir.length > 0 && !isAbsolutePath(dir)) {
+      return { ok: false, reason: 'exportDir', message: `本次导出目录必须是绝对路径：${dir}` };
+    }
+    const targetIds = normalizeTargetIds(input.targetIds);
+    if (input.match === 'all' && targetIds.length === 0) {
+      return {
+        ok: false,
+        reason: 'allTargets',
+        message: typeof input.allTargetsMessage === 'string'
+          ? input.allTargetsMessage
+          : '全部命中需要至少勾选一个对象',
+      };
+    }
+    const body = { zip: input.zip === true, byObject: input.byObject === true };
+    if (typeof input.taskId === 'string' && input.taskId.length > 0) body.taskId = input.taskId;
+    if (targetIds.length > 0) body.targetIds = targetIds;
+    if (input.match === 'any' || input.match === 'all') body.match = input.match;
+    if (dir.length > 0) body.exportDir = dir;
+    return { ok: true, body };
+  }
+
+  /** The export card's own button: checked objects are used as-is. */
+  function planCardExport(input) {
+    return buildExportRequest({
+      taskId: input.taskId,
+      targetIds: input.selectedTargets,
+      match: input.match,
+      exportDir: input.exportRunDir,
+      zip: input.zip,
+      byObject: input.byObject,
+    });
+  }
+
+  /**
+   * A task-list row's export button follows the export card's options. Checked
+   * objects only apply when the row is the card's current task; otherwise the
+   * previous task's selection is never carried into this request.
+   */
+  function planRowExport(input) {
+    const sameTask = typeof input.cardTaskId === 'string' && input.cardTaskId === input.rowTaskId;
+    return buildExportRequest({
+      taskId: input.rowTaskId,
+      targetIds: sameTask ? input.selectedTargets : [],
+      match: input.match,
+      exportDir: input.exportRunDir,
+      zip: input.zip,
+      byObject: input.byObject,
+      allTargetsMessage: '全部命中需要至少勾选一个对象，请在导出卡片勾选后再导出',
+    });
+  }
+
+  return { isAbsolutePath, buildExportRequest, planCardExport, planRowExport };
+}
+
 window.__ModuleLoader__.load({
   id: 'dsh-local-frames',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+    const { isAbsolutePath, planCardExport, planRowExport } = lfExportRequestHelpers();
 
     const STYLE_ID = 'dsh-local-frames-ui-style';
     const CSS = `
@@ -92,10 +166,6 @@ window.__ModuleLoader__.load({
       return { tasks, reload };
     }
 
-    function isAbsolutePath(value) {
-      return value.startsWith('/') || /^[A-Za-z]:[\\/]/u.test(value);
-    }
-
     function formatTime(value) {
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
@@ -144,6 +214,7 @@ window.__ModuleLoader__.load({
       const [exportRunDir, setExportRunDir] = React.useState('');
       const [exporting, setExporting] = React.useState(false);
       const [toast, setToast] = React.useState(null);
+      const exportCardRef = React.useRef(null);
       const lastPathFilled = React.useRef(false);
       React.useEffect(() => {
         request('/api/local-frames/models')
@@ -201,6 +272,7 @@ window.__ModuleLoader__.load({
         .filter((target) => !target.archived && (taskTargetIds.length === 0 || taskTargetIds.includes(target.target_id)))
         .map((target) => ({ target_id: target.target_id, name: target.name }));
       const selectedExportTask = tasks.find((entry) => entry.task_id === exportTaskId) ?? null;
+      const cardTaskId = selectedExportTask?.task_id ?? task?.task_id ?? null;
       const exportTargets = selectedExportTask === null ? currentTaskTargets : selectedExportTask.targets ?? [];
       const recentExports = status?.settings?.recentExports ?? [];
       React.useEffect(() => {
@@ -311,16 +383,11 @@ window.__ModuleLoader__.load({
           { clearRoot: nextRoot.length > 0 },
         );
       };
-      const performExport = (taskId, targetIds, options = {}) => {
+      const performExport = (body) => {
         if (exporting) return;
         setExporting(true);
         setMessage('');
         setError('');
-        const body = { zip: exportZip, byObject: exportByObject };
-        if (typeof taskId === 'string' && taskId.length > 0) body.taskId = taskId;
-        if (Array.isArray(targetIds) && targetIds.length > 0) body.targetIds = targetIds;
-        if (options.match === 'any' || options.match === 'all') body.match = options.match;
-        if (typeof options.exportDir === 'string' && options.exportDir.length > 0) body.exportDir = options.exportDir;
         request('/api/local-frames/export', body)
           .then((payload) => {
             const data = payload.data ?? {};
@@ -337,23 +404,39 @@ window.__ModuleLoader__.load({
           .finally(() => setExporting(false));
       };
       const runExport = () => {
-        const dir = exportRunDir.trim();
-        if (dir.length > 0 && !isAbsolutePath(dir)) {
-          setError(`本次导出目录必须是绝对路径：${dir}`);
-          return;
-        }
-        if (exportMatch === 'all' && selectedTargets.length === 0) {
-          setError('全部命中需要至少勾选一个对象');
-          return;
-        }
-        performExport(selectedExportTask?.task_id ?? task?.task_id ?? null, selectedTargets, {
+        const plan = planCardExport({
+          taskId: cardTaskId,
+          selectedTargets,
           match: exportMatch,
-          exportDir: dir,
+          exportRunDir,
+          zip: exportZip,
+          byObject: exportByObject,
         });
+        if (!plan.ok) {
+          setError(plan.message);
+          return;
+        }
+        performExport(plan.body);
       };
       const exportFromList = (taskId) => {
+        const plan = planRowExport({
+          rowTaskId: taskId,
+          cardTaskId,
+          selectedTargets,
+          match: exportMatch,
+          exportRunDir,
+          zip: exportZip,
+          byObject: exportByObject,
+        });
         setExportTaskId(taskId);
-        performExport(taskId, []);
+        if (!plan.ok) {
+          setError(plan.message);
+          if (plan.reason === 'allTargets') {
+            exportCardRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+          }
+          return;
+        }
+        performExport(plan.body);
       };
       const openExport = (directory) => {
         request('/api/local-frames/export/open', { path: directory })
@@ -959,7 +1042,7 @@ window.__ModuleLoader__.load({
                     }),
                   ),
                 ),
-            Paragraph('导出任务列表中的已完成任务只复用已有帧与标签，不重新抽帧、不调用模型。'),
+            Paragraph('导出任务列表中的已完成任务只复用已有帧与标签，不重新抽帧、不调用模型；行内「导出」跟随导出卡片的匹配方式、本次导出目录和 zip/按对象分目录选项。'),
           ),
         ),
         h(
@@ -968,7 +1051,7 @@ window.__ModuleLoader__.load({
           h('h3', { className: 'lf-section-title' }, '导出'),
           h(
             'div',
-            { className: 'lf-card' },
+            { className: 'lf-card', ref: exportCardRef },
             Paragraph('只复用已完成任务的帧与标签，不重新抽帧、不调用模型；任一命中且不勾选对象时导出任务全部对象。'),
             h(
               'label',
